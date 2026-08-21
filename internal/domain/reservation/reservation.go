@@ -1,0 +1,124 @@
+// Package reservation holds the Reservation aggregate: a revocable binding
+// of a quantity to demand. Physical delivery can fail after allocation, so a
+// reservation must be releasable and re-allocatable against a different
+// holding — it is never bound permanently to one StockUnit.
+package reservation
+
+import (
+	"errors"
+	"time"
+
+	"github.com/claudioed/inventory-storage/internal/domain/shared"
+)
+
+var (
+	ErrAlreadyResolved = errors.New("reservation is already resolved (confirmed, revoked, or expired)")
+	ErrExpired         = errors.New("reservation has expired")
+	ErrNoAllocations   = errors.New("reservation requires at least one allocation")
+)
+
+// Status is the lifecycle stage of a Reservation.
+type Status string
+
+const (
+	StatusActive    Status = "ACTIVE"
+	StatusConfirmed Status = "CONFIRMED"
+	StatusRevoked   Status = "REVOKED"
+	StatusExpired   Status = "EXPIRED"
+)
+
+// Allocation records how much of a reservation's quantity was drawn from a
+// specific StockUnit, so it can be returned to that same unit on revoke, or
+// consumed from it on confirm-pick.
+type Allocation struct {
+	StockUnitID string
+	Quantity    shared.Quantity
+}
+
+// Reservation is the aggregate root for a revocable claim against usable
+// inventory.
+type Reservation struct {
+	id          string
+	sku         shared.SKU
+	quantity    shared.Quantity
+	demandRef   string
+	allocations []Allocation
+	status      Status
+	createdAt   time.Time
+	expiresAt   time.Time
+}
+
+// New creates an Active reservation. Allocations must sum to quantity and
+// the caller (the ReserveStock use case) is responsible for having already
+// verified quantity <= usable at reserve time.
+func New(id string, sku shared.SKU, quantity shared.Quantity, demandRef string, allocations []Allocation, createdAt time.Time, timeout time.Duration) (*Reservation, error) {
+	if len(allocations) == 0 {
+		return nil, ErrNoAllocations
+	}
+	return &Reservation{
+		id:          id,
+		sku:         sku,
+		quantity:    quantity,
+		demandRef:   demandRef,
+		allocations: allocations,
+		status:      StatusActive,
+		createdAt:   createdAt,
+		expiresAt:   createdAt.Add(timeout),
+	}, nil
+}
+
+// Rehydrate reconstructs a Reservation from persisted state.
+func Rehydrate(id string, sku shared.SKU, quantity shared.Quantity, demandRef string, allocations []Allocation, status Status, createdAt, expiresAt time.Time) *Reservation {
+	return &Reservation{
+		id: id, sku: sku, quantity: quantity, demandRef: demandRef,
+		allocations: allocations, status: status, createdAt: createdAt, expiresAt: expiresAt,
+	}
+}
+
+func (r *Reservation) ID() string                { return r.id }
+func (r *Reservation) SKU() shared.SKU           { return r.sku }
+func (r *Reservation) Quantity() shared.Quantity { return r.quantity }
+func (r *Reservation) DemandRef() string         { return r.demandRef }
+func (r *Reservation) Allocations() []Allocation { return r.allocations }
+func (r *Reservation) Status() Status            { return r.status }
+func (r *Reservation) CreatedAt() time.Time      { return r.createdAt }
+func (r *Reservation) ExpiresAt() time.Time      { return r.expiresAt }
+
+// IsExpired reports whether now is past this reservation's timeout.
+func (r *Reservation) IsExpired(now time.Time) bool {
+	return now.After(r.expiresAt)
+}
+
+// Revoke cancels the reservation, returning its quantity to usable. It
+// cannot be revoked twice, and cannot be revoked once confirmed or expired
+// (no double-consume of the resolution).
+func (r *Reservation) Revoke() error {
+	if r.status != StatusActive {
+		return ErrAlreadyResolved
+	}
+	r.status = StatusRevoked
+	return nil
+}
+
+// Confirm resolves the reservation into a completed pick. It cannot be
+// confirmed twice, nor after it has been revoked or has expired.
+func (r *Reservation) Confirm(now time.Time) error {
+	if r.status != StatusActive {
+		return ErrAlreadyResolved
+	}
+	if r.IsExpired(now) {
+		return ErrExpired
+	}
+	r.status = StatusConfirmed
+	return nil
+}
+
+// Expire transitions an unresolved, timed-out reservation to Expired so its
+// quantity can be returned to usable.
+func (r *Reservation) Expire() error {
+	if r.status != StatusActive {
+		return ErrAlreadyResolved
+	}
+	r.status = StatusExpired
+	return nil
+}
