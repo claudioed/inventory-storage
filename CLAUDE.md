@@ -105,3 +105,58 @@ JSON DTOs live in the http adapter; never leak domain structs.
 - README.md: run steps (compose/migrate/go run), endpoints w/ curl, layering note.
 - These invariants each have a failing-path test: bin-capacity rejection,
   stow-requires-item-and-location, reservation <= usable, revoke returns to usable.
+
+---
+
+## Cross-service integration (additive — Task 7, do NOT touch existing domain code)
+
+This service PUBLISHES integration events over Kafka to a shared broker. This
+round it does not need to consume anything. Strictly additive: new adapter only,
+no change to existing aggregates, invariants, or use cases above.
+
+### Envelope (identical across all four warehouse-systems services)
+
+```json
+{
+  "event_id": "uuid-v4",
+  "event_type": "StockReserved",
+  "occurred_at": "2026-08-21T22:00:00Z",
+  "source": "inventory-storage",
+  "data": { }
+}
+```
+
+### Kafka
+
+- Client library: `github.com/segmentio/kafka-go`.
+- Broker: `KAFKA_BROKERS` env var (default `localhost:9092`). A shared broker
+  already runs via `~/warehouse-systems/docker-compose.kafka.yml` — connect to
+  it, do not add your own Kafka service to this repo's docker-compose.yml.
+- New adapter package `internal/adapters/outbound/kafka/` implementing the
+  existing `ports.EventPublisher` interface. Select via env
+  (`EVENT_PUBLISHER=kafka|log`, default `log` so existing tests are unaffected).
+- Topic: `warehouse.inventory.events`.
+- Publish `StockReserved` when `ReserveStock` succeeds:
+  `data`: `{"sku": "...", "quantity": N, "demand_ref": "..."}`.
+- Publish `ReservationRevoked` when `RevokeReservation` succeeds:
+  `data`: `{"sku": "...", "quantity": N, "demand_ref": "..."}`.
+  (Both events already exist in your domain event list — just make sure the
+  Kafka publisher adapter carries them through with this exact `data` shape;
+  do not invent new event names.)
+
+Downstream consumer: wes-work-planning projects these into its own
+`UsableInventoryObserved` read model, by SKU.
+
+### Definition of done for Task 7
+
+- New Kafka publisher adapter compiles and is unit-tested (e.g. against an
+  in-memory kafka-go writer fake, or by asserting the envelope shape produced).
+- Existing full suite (`go build ./...`, `go vet ./...`, `go test ./...`,
+  `go test ./... -race`) still green, unchanged.
+- README gains an "Integration" section: topic published, exact JSON schemas
+  above, the `KAFKA_BROKERS`/`EVENT_PUBLISHER` env vars.
+- Do a REAL smoke test: with the shared broker running and `EVENT_PUBLISHER=kafka`,
+  actually call `POST /reservations` against the running binary and confirm the
+  message lands on `warehouse.inventory.events` via
+  `kafka-console-consumer.sh --from-beginning` (or an equivalent one-off Go
+  consumer) before declaring done.

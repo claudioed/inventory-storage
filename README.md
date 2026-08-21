@@ -28,6 +28,7 @@ internal/
     outbound/postgres/       pgxpool repos + golang-migrate migrations
     outbound/memory/         thread-safe in-memory repos (tests, local dev)
     outbound/events/         log publisher + buffered publisher (kafka-ready interface)
+    outbound/kafka/          Kafka publisher (integration events, see below)
 migrations/                  golang-migrate SQL files
 ```
 
@@ -129,6 +130,59 @@ curl -s -X POST localhost:8080/bins/A-1-1/cycle-count \
 Error responses are `{"error": "..."}` with a status mapped from the typed
 domain/application error (400 invalid input, 404 not found, 409 conflict —
 e.g. bin full, reservation exceeds usable, reservation already resolved).
+
+## Integration
+
+This service publishes integration events to the shared warehouse-systems
+Kafka broker so other bounded contexts (e.g. `wes-work-planning`) can project
+their own read models from inventory reality. It does not consume anything
+yet.
+
+- **Topic**: `warehouse.inventory.events`
+- **Publisher selection**: `EVENT_PUBLISHER` env var — `log` (default,
+  unchanged behavior: stdout logging with in-memory adapters, or the Postgres
+  outbox with `DATABASE_URL` set) or `kafka`.
+- **Broker**: `KAFKA_BROKERS` env var, comma-separated, default
+  `localhost:9092`. Start the shared broker from the workspace root:
+  ```sh
+  docker compose -f ~/warehouse-systems/docker-compose.kafka.yml up -d
+  ```
+- **Envelope** (identical across all warehouse-systems services):
+  ```json
+  {
+    "event_id": "uuid-v4",
+    "event_type": "StockReserved",
+    "occurred_at": "2026-08-21T22:00:00Z",
+    "source": "inventory-storage",
+    "data": {}
+  }
+  ```
+- **Events published** — `StockReserved` (on a successful `ReserveStock`) and
+  `ReservationRevoked` (on a successful `RevokeReservation`), both with the
+  same `data` shape:
+  ```json
+  {"sku": "SKU-1", "quantity": 4, "demand_ref": "order-42"}
+  ```
+  (`ReservationRevoked`'s domain event only carries the reservation id; the
+  Kafka adapter looks the reservation back up via `ReservationRepo` to fill in
+  `sku`/`quantity`/`demand_ref`.) Every other domain event (`StockReceived`,
+  `ItemStowed`, ...) is not part of this integration contract and is not
+  forwarded to Kafka.
+
+Run it against the real broker:
+
+```sh
+export EVENT_PUBLISHER=kafka
+export KAFKA_BROKERS=localhost:9092
+export DATABASE_URL='postgres://inventory:inventory@localhost:5432/inventory?sslmode=disable'
+go run ./cmd/inventory
+
+# in another shell, tail the topic:
+docker exec -it warehouse-kafka /opt/kafka/bin/kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 --topic warehouse.inventory.events --from-beginning
+
+# then drive a reservation + revoke through the API (see curl walkthrough above)
+```
 
 ## Tests
 

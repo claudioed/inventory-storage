@@ -8,11 +8,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	inboundhttp "github.com/claudioed/inventory-storage/internal/adapters/inbound/http"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/events"
+	kafkaadapter "github.com/claudioed/inventory-storage/internal/adapters/outbound/kafka"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/memory"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/postgres"
 	"github.com/claudioed/inventory-storage/internal/application/ports"
@@ -29,14 +31,15 @@ func run() error {
 	httpAddr := getenv("HTTP_ADDR", ":8080")
 	databaseURL := os.Getenv("DATABASE_URL")
 	migrationsPath := getenv("MIGRATIONS_PATH", "migrations")
+	eventPublisher := getenv("EVENT_PUBLISHER", "log")
 
 	logger := log.New(os.Stdout, "inventory-storage ", log.LstdFlags)
 
-	stockRepo, locationRepo, reservationRepo, publisher, closePool, err := buildAdapters(databaseURL, migrationsPath, logger)
+	stockRepo, locationRepo, reservationRepo, publisher, closeAdapters, err := buildAdapters(databaseURL, migrationsPath, eventPublisher, logger)
 	if err != nil {
 		return err
 	}
-	defer closePool()
+	defer closeAdapters()
 
 	clock := memory.SystemClock{}
 
@@ -80,32 +83,62 @@ func run() error {
 
 // buildAdapters wires the Postgres adapters when DATABASE_URL is set, or
 // falls back to the in-memory adapters for local development without a
-// database.
-func buildAdapters(databaseURL, migrationsPath string, logger *log.Logger) (
+// database. The event publisher defaults to that same memory/Postgres
+// choice ("log"), or can be switched to the Kafka integration-events
+// publisher via eventPublisher="kafka" (EVENT_PUBLISHER env), independent of
+// which repos are in use.
+func buildAdapters(databaseURL, migrationsPath, eventPublisher string, logger *log.Logger) (
 	ports.StockRepo, ports.LocationRepo, ports.ReservationRepo, ports.EventPublisher, func(), error,
 ) {
 	noop := func() {}
 
+	var (
+		stockRepo       ports.StockRepo
+		locationRepo    ports.LocationRepo
+		reservationRepo ports.ReservationRepo
+		defaultPub      ports.EventPublisher
+		closeRepos      = noop
+	)
+
 	if databaseURL == "" {
 		logger.Println("DATABASE_URL not set; using in-memory adapters")
-		return memory.NewStockRepo(), memory.NewLocationRepo(), memory.NewReservationRepo(), events.NewLogPublisher(logger), noop, nil
+		stockRepo = memory.NewStockRepo()
+		locationRepo = memory.NewLocationRepo()
+		reservationRepo = memory.NewReservationRepo()
+		defaultPub = events.NewLogPublisher(logger)
+	} else {
+		if err := postgres.RunMigrations(databaseURL, migrationsPath); err != nil {
+			return nil, nil, nil, nil, noop, err
+		}
+
+		pool, err := postgres.NewPool(context.Background(), databaseURL)
+		if err != nil {
+			return nil, nil, nil, nil, noop, err
+		}
+
+		stockRepo = postgres.NewStockRepo(pool)
+		locationRepo = postgres.NewLocationRepo(pool)
+		reservationRepo = postgres.NewReservationRepo(pool)
+		defaultPub = postgres.NewEventPublisher(pool)
+		closeRepos = pool.Close
 	}
 
-	if err := postgres.RunMigrations(databaseURL, migrationsPath); err != nil {
-		return nil, nil, nil, nil, noop, err
+	if !strings.EqualFold(eventPublisher, "kafka") {
+		return stockRepo, locationRepo, reservationRepo, defaultPub, closeRepos, nil
 	}
 
-	pool, err := postgres.NewPool(context.Background(), databaseURL)
-	if err != nil {
-		return nil, nil, nil, nil, noop, err
+	brokers := strings.Split(getenv("KAFKA_BROKERS", "localhost:9092"), ",")
+	writer := kafkaadapter.NewWriter(brokers...)
+	logger.Printf("EVENT_PUBLISHER=kafka; publishing to topic %q on %v", kafkaadapter.Topic, brokers)
+
+	closeAll := func() {
+		if err := writer.Close(); err != nil {
+			logger.Printf("error closing kafka writer: %v", err)
+		}
+		closeRepos()
 	}
 
-	return postgres.NewStockRepo(pool),
-		postgres.NewLocationRepo(pool),
-		postgres.NewReservationRepo(pool),
-		postgres.NewEventPublisher(pool),
-		pool.Close,
-		nil
+	return stockRepo, locationRepo, reservationRepo, kafkaadapter.NewPublisher(writer, reservationRepo), closeAll, nil
 }
 
 func getenv(key, fallback string) string {
