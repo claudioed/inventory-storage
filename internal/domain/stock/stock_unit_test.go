@@ -195,3 +195,51 @@ func TestStockUnit_Reserve_UnlocatedUnit_Rejected(t *testing.T) {
 		t.Fatalf("expected ErrUnitUnlocated, got %v", err)
 	}
 }
+
+func TestStockUnit_Accessors(t *testing.T) {
+	u, _ := NewStockUnit("su-1", mustSKU(t), mustBin(t), mustQty(t, 5))
+	_ = u.Reserve(mustQty(t, 2))
+
+	if u.ID() != "su-1" {
+		t.Fatalf("expected ID=su-1, got %s", u.ID())
+	}
+	if u.SKU() != mustSKU(t) {
+		t.Fatalf("expected SKU to round-trip, got %v", u.SKU())
+	}
+	if u.BinID() != mustBin(t) {
+		t.Fatalf("expected BinID to round-trip, got %v", u.BinID())
+	}
+	if u.Reserved().Int() != 2 {
+		t.Fatalf("expected Reserved()=2, got %d", u.Reserved().Int())
+	}
+}
+
+func TestRehydrateStockUnit_ReconstructsWithoutValidation(t *testing.T) {
+	u := RehydrateStockUnit("su-1", mustSKU(t), mustBin(t), mustQty(t, 5), mustQty(t, 2), StateReserved)
+
+	if u.ID() != "su-1" || u.Quantity().Int() != 5 || u.Reserved().Int() != 2 || u.State() != StateReserved {
+		t.Fatalf("expected rehydrated fields to round-trip, got id=%s qty=%d reserved=%d state=%v",
+			u.ID(), u.Quantity().Int(), u.Reserved().Int(), u.State())
+	}
+}
+
+func TestStockUnit_Usable_RemovedState_IsZero(t *testing.T) {
+	u, _ := NewStockUnit("su-1", mustSKU(t), mustBin(t), mustQty(t, 5))
+	_ = u.Reserve(mustQty(t, 5))
+	_ = u.Pick(mustQty(t, 5))
+
+	if u.State() != StateRemoved {
+		t.Fatalf("expected StateRemoved precondition, got %v", u.State())
+	}
+	if u.Usable().Int() != 0 {
+		t.Fatalf("expected usable=0 for removed unit, got %d", u.Usable().Int())
+	}
+}
+
+func TestStockUnit_Pick_ExceedsOnHandQuantity_Rejected(t *testing.T) {
+	u := RehydrateStockUnit("su-1", mustSKU(t), mustBin(t), mustQty(t, 3), mustQty(t, 5), StateReserved)
+
+	if err := u.Pick(mustQty(t, 5)); err != ErrInsufficientReserved {
+		t.Fatalf("expected ErrInsufficientReserved, got %v", err)
+	}
+}

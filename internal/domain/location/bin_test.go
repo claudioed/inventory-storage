@@ -84,3 +84,60 @@ func TestBin_Release_ExceedsOccupancy_Rejected(t *testing.T) {
 		t.Fatalf("expected ErrReleaseExceedsOccupancy, got %v", err)
 	}
 }
+
+func TestNewBin_RejectsEmptyID(t *testing.T) {
+	if _, err := NewBin("", mustQty(t, 10)); err != shared.ErrEmptyBinID {
+		t.Fatalf("expected ErrEmptyBinID, got %v", err)
+	}
+}
+
+func TestBin_Occupy_RejectsZeroQuantity(t *testing.T) {
+	binID, _ := shared.NewBinId("A-1-1")
+	bin, _ := NewBin(binID, mustQty(t, 10))
+
+	if err := bin.Occupy(mustQty(t, 0)); err != shared.ErrZeroQuantity {
+		t.Fatalf("expected ErrZeroQuantity, got %v", err)
+	}
+}
+
+func TestBin_Release_RejectsZeroQuantity(t *testing.T) {
+	binID, _ := shared.NewBinId("A-1-1")
+	bin, _ := NewBin(binID, mustQty(t, 10))
+
+	if err := bin.Release(mustQty(t, 0)); err != shared.ErrZeroQuantity {
+		t.Fatalf("expected ErrZeroQuantity, got %v", err)
+	}
+}
+
+func TestBin_Accessors(t *testing.T) {
+	binID, _ := shared.NewBinId("A-1-1")
+	bin, _ := NewBin(binID, mustQty(t, 10))
+	_ = bin.Occupy(mustQty(t, 4))
+
+	if bin.ID() != binID {
+		t.Fatalf("expected ID()=%v, got %v", binID, bin.ID())
+	}
+	if bin.Capacity().Int() != 10 {
+		t.Fatalf("expected Capacity()=10, got %d", bin.Capacity().Int())
+	}
+	if bin.Available().Int() != 6 {
+		t.Fatalf("expected Available()=6, got %d", bin.Available().Int())
+	}
+	if bin.IsFull() {
+		t.Fatalf("expected IsFull()=false at partial occupancy")
+	}
+	_ = bin.Occupy(mustQty(t, 6))
+	if !bin.IsFull() {
+		t.Fatalf("expected IsFull()=true at full occupancy")
+	}
+}
+
+func TestRehydrateBin_ReconstructsWithoutValidation(t *testing.T) {
+	binID, _ := shared.NewBinId("A-1-1")
+	bin := RehydrateBin(binID, mustQty(t, 10), mustQty(t, 4))
+
+	if bin.ID() != binID || bin.Capacity().Int() != 10 || bin.Occupied().Int() != 4 {
+		t.Fatalf("expected rehydrated fields to round-trip, got id=%v capacity=%d occupied=%d",
+			bin.ID(), bin.Capacity().Int(), bin.Occupied().Int())
+	}
+}

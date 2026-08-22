@@ -3,6 +3,7 @@ package usecases_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
 )
@@ -66,5 +67,97 @@ func TestReserveStock_SpansMultipleStockUnits(t *testing.T) {
 	}
 	if len(res.Allocations()) != 2 {
 		t.Fatalf("expected allocations across 2 stock units, got %d", len(res.Allocations()))
+	}
+}
+
+func TestReserveStock_RejectsZeroQuantity(t *testing.T) {
+	e := newEnv()
+	uc := &usecases.ReserveStock{Stock: e.Stock, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
+
+	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), 0, "order-1")
+	if err == nil {
+		t.Fatalf("expected error for zero quantity")
+	}
+}
+
+func TestReserveStock_NoStockForSKU_Rejected(t *testing.T) {
+	e := newEnv()
+	uc := &usecases.ReserveStock{Stock: e.Stock, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
+
+	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 1), "order-1")
+	if err != usecases.ErrInsufficientUsable {
+		t.Fatalf("expected ErrInsufficientUsable, got %v", err)
+	}
+}
+
+func TestReserveStock_StockFindBySKUFails_PropagatesError(t *testing.T) {
+	e := newEnv()
+	stockRepo := &failingStockRepo{delegate: e.Stock, failFindBySKU: true}
+	uc := &usecases.ReserveStock{Stock: stockRepo, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
+
+	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 1), "order-1")
+	if err != errFake {
+		t.Fatalf("expected errFake, got %v", err)
+	}
+}
+
+func TestReserveStock_StockSaveFails_PropagatesError(t *testing.T) {
+	e := newEnv()
+	stowUnit(t, e, "SKU-1", "A-1-1", 10, 10)
+	stockRepo := &failingStockRepo{delegate: e.Stock, failSave: true}
+	uc := &usecases.ReserveStock{Stock: stockRepo, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
+
+	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 6), "order-1")
+	if err != errFake {
+		t.Fatalf("expected errFake, got %v", err)
+	}
+}
+
+func TestReserveStock_ReservationsNextIDFails_PropagatesError(t *testing.T) {
+	e := newEnv()
+	stowUnit(t, e, "SKU-1", "A-1-1", 10, 10)
+	resRepo := &failingReservationRepo{delegate: e.Reservations, failNextID: true}
+	uc := &usecases.ReserveStock{Stock: e.Stock, Reservations: resRepo, Events: e.Events, Clock: e.Clock}
+
+	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 6), "order-1")
+	if err != errFake {
+		t.Fatalf("expected errFake, got %v", err)
+	}
+}
+
+func TestReserveStock_ReservationsSaveFails_PropagatesError(t *testing.T) {
+	e := newEnv()
+	stowUnit(t, e, "SKU-1", "A-1-1", 10, 10)
+	resRepo := &failingReservationRepo{delegate: e.Reservations, failSave: true}
+	uc := &usecases.ReserveStock{Stock: e.Stock, Reservations: resRepo, Events: e.Events, Clock: e.Clock}
+
+	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 6), "order-1")
+	if err != errFake {
+		t.Fatalf("expected errFake, got %v", err)
+	}
+}
+
+func TestReserveStock_EventPublishFails_PropagatesError(t *testing.T) {
+	e := newEnv()
+	stowUnit(t, e, "SKU-1", "A-1-1", 10, 10)
+	uc := &usecases.ReserveStock{Stock: e.Stock, Reservations: e.Reservations, Events: failingEvents{}, Clock: e.Clock}
+
+	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 6), "order-1")
+	if err != errFake {
+		t.Fatalf("expected errFake, got %v", err)
+	}
+}
+
+func TestReserveStock_CustomTimeout_Applied(t *testing.T) {
+	e := newEnv()
+	stowUnit(t, e, "SKU-1", "A-1-1", 10, 10)
+	uc := &usecases.ReserveStock{Stock: e.Stock, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock, Timeout: time.Hour}
+
+	res, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 6), "order-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.ExpiresAt().Equal(res.CreatedAt().Add(time.Hour)) {
+		t.Fatalf("expected custom timeout of 1h to apply, got expiresAt=%v createdAt=%v", res.ExpiresAt(), res.CreatedAt())
 	}
 }

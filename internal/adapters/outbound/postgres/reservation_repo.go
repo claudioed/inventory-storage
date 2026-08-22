@@ -26,7 +26,7 @@ func (r *ReservationRepo) Save(ctx context.Context, res *reservation.Reservation
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	_, err = tx.Exec(ctx, `
 		INSERT INTO reservations (id, sku, quantity, demand_ref, status, created_at, expires_at)

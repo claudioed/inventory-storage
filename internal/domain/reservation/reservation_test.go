@@ -90,3 +90,78 @@ func TestReservation_IsExpired(t *testing.T) {
 		t.Fatalf("should be expired after timeout elapses")
 	}
 }
+
+func TestReservation_Expire_Succeeds(t *testing.T) {
+	r := newActive(t)
+	if err := r.Expire(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r.Status() != StatusExpired {
+		t.Fatalf("expected StatusExpired, got %v", r.Status())
+	}
+}
+
+// No double-consume: expiring twice is rejected.
+func TestReservation_Expire_Twice_Rejected(t *testing.T) {
+	r := newActive(t)
+	_ = r.Expire()
+
+	if err := r.Expire(); err != ErrAlreadyResolved {
+		t.Fatalf("expected ErrAlreadyResolved, got %v", err)
+	}
+}
+
+func TestReservation_Expire_AfterRevoke_Rejected(t *testing.T) {
+	r := newActive(t)
+	_ = r.Revoke()
+
+	if err := r.Expire(); err != ErrAlreadyResolved {
+		t.Fatalf("expected ErrAlreadyResolved, got %v", err)
+	}
+}
+
+func TestReservation_Accessors(t *testing.T) {
+	sku, _ := shared.NewSKU("SKU-1")
+	allocs := []Allocation{{StockUnitID: "su-1", Quantity: mustQty(t, 5)}}
+	created := time.Unix(0, 0)
+	r, err := New("r-1", sku, mustQty(t, 5), "order-1", allocs, created, time.Hour)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if r.ID() != "r-1" {
+		t.Fatalf("expected ID=r-1, got %s", r.ID())
+	}
+	if r.SKU() != sku {
+		t.Fatalf("expected SKU=%v, got %v", sku, r.SKU())
+	}
+	if r.Quantity().Int() != 5 {
+		t.Fatalf("expected Quantity=5, got %d", r.Quantity().Int())
+	}
+	if r.DemandRef() != "order-1" {
+		t.Fatalf("expected DemandRef=order-1, got %s", r.DemandRef())
+	}
+	if len(r.Allocations()) != 1 || r.Allocations()[0].StockUnitID != "su-1" {
+		t.Fatalf("expected allocations to round-trip, got %+v", r.Allocations())
+	}
+	if !r.CreatedAt().Equal(created) {
+		t.Fatalf("expected CreatedAt=%v, got %v", created, r.CreatedAt())
+	}
+	if !r.ExpiresAt().Equal(created.Add(time.Hour)) {
+		t.Fatalf("expected ExpiresAt=%v, got %v", created.Add(time.Hour), r.ExpiresAt())
+	}
+}
+
+func TestRehydrate_ReconstructsWithoutValidation(t *testing.T) {
+	sku, _ := shared.NewSKU("SKU-1")
+	allocs := []Allocation{{StockUnitID: "su-1", Quantity: mustQty(t, 5)}}
+	created := time.Unix(0, 0)
+	expires := created.Add(time.Hour)
+
+	r := Rehydrate("r-1", sku, mustQty(t, 5), "order-1", allocs, StatusConfirmed, created, expires)
+
+	if r.ID() != "r-1" || r.Status() != StatusConfirmed || !r.ExpiresAt().Equal(expires) {
+		t.Fatalf("expected rehydrated fields to round-trip, got id=%s status=%v expiresAt=%v",
+			r.ID(), r.Status(), r.ExpiresAt())
+	}
+}

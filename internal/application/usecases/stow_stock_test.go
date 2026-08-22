@@ -87,3 +87,61 @@ func TestStowStock_UnknownBin_Rejected(t *testing.T) {
 		t.Fatalf("expected ErrBinNotFound, got %v", err)
 	}
 }
+
+func TestStowStock_LocationsFindByIDFails_PropagatesError(t *testing.T) {
+	e := newEnv()
+	locs := &failingLocationRepo{delegate: e.Locations, failFindByID: true}
+	uc := &usecases.StowStock{Stock: e.Stock, Locations: locs, Events: e.Events, Clock: e.Clock}
+
+	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 1), mustBinID(t, "A-1-1"))
+	if err != errFake {
+		t.Fatalf("expected errFake, got %v", err)
+	}
+}
+
+func TestStowStock_StockNextIDFails_PropagatesError(t *testing.T) {
+	e := newEnv()
+	seedBin(t, e, mustBinID(t, "A-1-1"), 10)
+	stockRepo := &failingStockRepo{delegate: e.Stock, failNextID: true}
+	uc := &usecases.StowStock{Stock: stockRepo, Locations: e.Locations, Events: e.Events, Clock: e.Clock}
+
+	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 1), mustBinID(t, "A-1-1"))
+	if err != errFake {
+		t.Fatalf("expected errFake, got %v", err)
+	}
+}
+
+func TestStowStock_LocationsSaveFails_PropagatesError(t *testing.T) {
+	e := newEnv()
+	seedBin(t, e, mustBinID(t, "A-1-1"), 10)
+	locs := &failingLocationRepo{delegate: e.Locations, failSave: true}
+	uc := &usecases.StowStock{Stock: e.Stock, Locations: locs, Events: e.Events, Clock: e.Clock}
+
+	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 1), mustBinID(t, "A-1-1"))
+	if err != errFake {
+		t.Fatalf("expected errFake, got %v", err)
+	}
+}
+
+func TestStowStock_StockSaveFails_PropagatesError(t *testing.T) {
+	e := newEnv()
+	seedBin(t, e, mustBinID(t, "A-1-1"), 10)
+	stockRepo := &failingStockRepo{delegate: e.Stock, failSave: true}
+	uc := &usecases.StowStock{Stock: stockRepo, Locations: e.Locations, Events: e.Events, Clock: e.Clock}
+
+	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 1), mustBinID(t, "A-1-1"))
+	if err != errFake {
+		t.Fatalf("expected errFake, got %v", err)
+	}
+}
+
+func TestStowStock_EventPublishFails_PropagatesError(t *testing.T) {
+	e := newEnv()
+	seedBin(t, e, mustBinID(t, "A-1-1"), 10)
+	uc := &usecases.StowStock{Stock: e.Stock, Locations: e.Locations, Events: failingEvents{}, Clock: e.Clock}
+
+	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 1), mustBinID(t, "A-1-1"))
+	if err != errFake {
+		t.Fatalf("expected errFake, got %v", err)
+	}
+}
