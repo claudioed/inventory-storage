@@ -1,0 +1,12 @@
+apiVersion: v2
+name: inventory-storage
+description: Inventory & Storage — WMS-tier bounded context (chaotic/random stow, revocable reservations, usable inventory)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/claudioed/inventory-storage
+keywords:
+  - ddd
+  - hexagonal-architecture
+  - warehouse-management-system
+  - golang
