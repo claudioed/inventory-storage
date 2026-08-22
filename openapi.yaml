@@ -1,0 +1,812 @@
+openapi: 3.0.3
+info:
+  title: Inventory & Storage API
+  version: "1.0.0"
+  description: >
+    The WMS-tier authoritative record of what is held where, and what
+    portion of it is usable, for the warehouse-systems platform. This
+    bounded context implements Amazon-style chaotic (random) stow: there is
+    no fixed product location — an inbound item may be stowed into any free
+    bin, and this service records the exact bin it landed in. It supplies
+    "stock reality" to the Work Planning bounded context and makes
+    allocation a revocable reservation, so a failed physical pick or
+    delivery never strands an order: a reservation can always be revoked
+    and re-satisfied from a different physical holding.
+
+
+    Its aggregates are **StockUnit** (a quantity of a SKU at a specific
+    bin — every physical item has exactly one known bin, or is flagged
+    Unlocated), **Bin/Location** (a coded slot with fixed capacity; any SKU
+    may occupy any free bin, chaotic-storage style), and **Reservation** (a
+    revocable binding of quantity to demand, with a timeout). "Usable"
+    inventory — on-hand minus active reservations minus held/unlocated
+    stock — is what constrains what this service will let you reserve, not
+    raw on-hand quantity.
+
+
+    Out of this service's boundary: it does not pick, pack, ship, route
+    associates, or manage stations/tasks/labor (that is Work Planning /
+    fulfillment-execution); it does not decide *what* to receive or forecast
+    demand; and it does not create bins (bin provisioning is an
+    infrastructure/seed-data concern today, not an HTTP-exposed operation).
+    Error responses across this API use RFC 7807 (`application/problem+json`)
+    Problem Details.
+  contact:
+    name: Inventory & Storage (Core Bounded Context)
+servers:
+  - url: http://localhost:8080
+    description: Local development
+security: []
+tags:
+  - name: Stock
+    description: >
+      Receiving and stowing physical stock. ReceiveStock stages inbound
+      goods (item-scan only); StowStock durably records the item at a bin
+      (item-scan + location-scan), which is the only way a StockUnit
+      aggregate comes into existence.
+  - name: Reservations
+    description: >
+      Revocable bindings of usable stock to demand. A Reservation can be
+      revoked (returning its quantity to usable) or confirmed as picked
+      (consuming it) — it never permanently binds to one physical bin, so a
+      failed pick can be re-satisfied elsewhere.
+  - name: Inventory
+    description: >
+      Read models projected from StockUnits — currently, usable inventory
+      by SKU (on-hand minus active reservations minus held/unlocated stock).
+  - name: Bins
+    description: >
+      Cycle counting: verifying a bin's physical contents against system
+      records and reconciling discrepancies (shortfall marks stock
+      Unlocated; overage is flagged for a separate receiving/audit process).
+  - name: Health
+    description: Liveness probe.
+
+paths:
+  /healthz:
+    get:
+      operationId: getHealthz
+      summary: Liveness probe
+      description: >
+        Returns 200 with a static status body if the process is up. Does
+        not check downstream dependencies (e.g. Postgres, Kafka) — it is a
+        liveness check, not a readiness check.
+      tags: [Health]
+      responses:
+        "200":
+          description: Service is alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                example:
+                  status: ok
+
+  /stock/receive:
+    post:
+      operationId: receiveStock
+      summary: Acknowledge inbound stock for a SKU
+      description: >
+        Stages a quantity of a SKU as received into the building
+        (publishes StockReceived) without assigning it to a bin yet. This
+        does NOT create a StockUnit aggregate: a StockUnit requires both an
+        item-scan and a location-scan by construction (the
+        stow-requires-both invariant), and a staged receipt has no bin yet.
+        The durable, addressable record only starts at StowStock — that is
+        why this operation returns 202 Accepted rather than 201 Created:
+        there is no resource here to hand back a Location for.
+      tags: [Stock]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReceiveStockRequest"
+            example:
+              sku: SKU-1
+              quantity: 10
+      responses:
+        "202":
+          description: >
+            Receipt accepted and staged; not yet stowed to a bin.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StagedReceipt"
+              example:
+                sku: SKU-1
+                quantity: 10
+                receivedAt: "2026-08-22T14:20:00Z"
+        "400":
+          description: Malformed JSON body, or SKU missing/empty.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/empty-sku
+                title: SKU must not be empty
+                status: 400
+                detail: sku must not be empty
+                instance: /stock/receive
+        "422":
+          description: Quantity present but not a positive number.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/zero-quantity
+                title: Quantity must be greater than zero
+                status: 422
+                detail: quantity must be greater than zero
+                instance: /stock/receive
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /stock/stow:
+    post:
+      operationId: stowStock
+      summary: Stow received stock into a bin
+      description: >
+        Places a quantity of a SKU into a specific bin, requiring BOTH an
+        item-scan (sku) and a location-scan (binId) — this is the only
+        path that creates a StockUnit aggregate, and skipping either scan
+        is precisely how inventory gets lost, so both are mandatory.
+        Respects the bin's capacity: a stow that would exceed
+        sum(occupied) <= capacity is rejected with 409. Chaotic storage
+        means any SKU may be stowed into any free bin — there is no
+        fixed product-to-bin mapping.
+      tags: [Stock]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StowStockRequest"
+            example:
+              sku: SKU-1
+              quantity: 10
+              binId: A-1-1
+      responses:
+        "201":
+          description: Stock unit created and stowed at the given bin.
+          headers:
+            Location:
+              description: URI of the newly created StockUnit.
+              schema:
+                type: string
+                example: /stock/su-164710cb-5e14-400b-849c-ed94d8256c6b
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StockUnit"
+              example:
+                id: su-164710cb-5e14-400b-849c-ed94d8256c6b
+                sku: SKU-1
+                binId: A-1-1
+                quantity: 10
+                reserved: 0
+                state: AVAILABLE
+        "400":
+          description: >
+            Malformed JSON body, or SKU/binId missing (either scan absent).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/empty-bin-id
+                title: Bin ID must not be empty
+                status: 400
+                detail: bin id must not be empty
+                instance: /stock/stow
+        "404":
+          description: The target bin does not exist.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/bin-not-found
+                title: Bin not found
+                status: 404
+                detail: bin not found
+                instance: /stock/stow
+        "409":
+          description: The bin does not have enough free capacity for this quantity.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/bin-full
+                title: "Bin is full: capacity exceeded"
+                status: 409
+                detail: "bin is full: capacity exceeded"
+                instance: /stock/stow
+        "422":
+          description: Quantity present but not a positive number.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/zero-quantity
+                title: Quantity must be greater than zero
+                status: 422
+                detail: quantity must be greater than zero
+                instance: /stock/stow
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /reservations:
+    post:
+      operationId: reserveStock
+      summary: Create a revocable reservation against usable inventory
+      description: >
+        Binds a quantity of a SKU's usable inventory (on-hand minus
+        existing reservations, first-fit across whichever StockUnits have
+        usable quantity) to a piece of demand identified by demandRef. The
+        reservation is NOT permanently bound to one physical StockUnit —
+        the specific units/quantities drawn from are recorded as
+        Allocations, but a subsequent revoke-and-reserve cycle is free to
+        draw from a different holding. This is what lets a failed physical
+        pick be retried without stranding the order. The reservation
+        expires automatically after a timeout if never confirmed or
+        revoked. Not idempotent: retrying this call after a dropped
+        response creates a second reservation for the same demandRef (see
+        REST_AUDIT.md's idempotency notes).
+      tags: [Reservations]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReserveStockRequest"
+            example:
+              sku: SKU-1
+              quantity: 6
+              demandRef: order-42
+      responses:
+        "201":
+          description: Reservation created.
+          headers:
+            Location:
+              description: URI of the newly created Reservation.
+              schema:
+                type: string
+                example: /reservations/res-a1b2c3d4-0000-0000-0000-000000000001
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Reservation"
+              example:
+                id: res-a1b2c3d4-0000-0000-0000-000000000001
+                sku: SKU-1
+                quantity: 6
+                demandRef: order-42
+                status: ACTIVE
+                allocations:
+                  - stockUnitId: su-164710cb-5e14-400b-849c-ed94d8256c6b
+                    quantity: 6
+                expiresAt: "2026-08-22T14:50:00Z"
+        "400":
+          description: Malformed JSON body, or SKU missing/empty.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/empty-sku
+                title: SKU must not be empty
+                status: 400
+                detail: sku must not be empty
+                instance: /reservations
+        "409":
+          description: >
+            Requested quantity exceeds this SKU's currently usable
+            inventory across all its StockUnits.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/insufficient-usable
+                title: Requested quantity exceeds usable inventory
+                status: 409
+                detail: requested quantity exceeds usable inventory
+                instance: /reservations
+        "422":
+          description: Quantity present but not a positive number.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/zero-quantity
+                title: Quantity must be greater than zero
+                status: 422
+                detail: quantity must be greater than zero
+                instance: /reservations
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /reservations/{id}:
+    delete:
+      operationId: revokeReservation
+      summary: Revoke a reservation
+      description: >
+        Cancels an ACTIVE reservation and returns its full reserved
+        quantity to usable inventory on every StockUnit it had allocated
+        from. This is the mechanism that makes reservations safe against
+        physical delivery failure: revoke, then reserve again — the second
+        reservation is free to draw from a different physical holding.
+        Idempotent in effect (a resource that no longer exists or is
+        already resolved simply can't be revoked again), though a second
+        call on an already-resolved reservation is reported as 409, not a
+        silent 204.
+      tags: [Reservations]
+      parameters:
+        - $ref: "#/components/parameters/ReservationId"
+      responses:
+        "204":
+          description: Reservation revoked; quantity returned to usable.
+        "404":
+          description: No reservation exists with this id.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/reservation-not-found
+                title: Reservation not found
+                status: 404
+                detail: reservation not found
+                instance: /reservations/does-not-exist
+        "409":
+          description: The reservation is already resolved (confirmed, revoked, or expired).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/reservation-already-resolved
+                title: Reservation is already resolved
+                status: 409
+                detail: reservation is already resolved (confirmed, revoked, or expired)
+                instance: /reservations/res-a1b2c3d4-0000-0000-0000-000000000001
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /reservations/{id}/confirm-pick:
+    post:
+      operationId: confirmPick
+      summary: Confirm a reservation's physical pick
+      description: >
+        Consumes a reservation: for every Allocation it holds, the
+        allocated quantity is physically removed from its StockUnit
+        (StockUnit transitions toward PICKED/REMOVED) and the
+        corresponding bin capacity is released. This is a terminal,
+        one-way command on the resource in the domain command style (not
+        forced into PUT/PATCH) — a reservation that is already resolved,
+        expired, or has no allocations cannot be confirmed again.
+      tags: [Reservations]
+      parameters:
+        - $ref: "#/components/parameters/ReservationId"
+      responses:
+        "204":
+          description: Pick confirmed; reservation consumed.
+        "404":
+          description: >
+            No reservation exists with this id (or, in a data-consistency
+            fault, one of its allocated stock units/bins is missing).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/reservation-not-found
+                title: Reservation not found
+                status: 404
+                detail: reservation not found
+                instance: /reservations/does-not-exist/confirm-pick
+        "409":
+          description: >
+            The reservation cannot be confirmed: already resolved,
+            expired, has no allocations, or the pick quantity/bin
+            release is inconsistent with current stock state.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/reservation-expired
+                title: Reservation has expired
+                status: 409
+                detail: reservation has expired
+                instance: /reservations/res-a1b2c3d4-0000-0000-0000-000000000001/confirm-pick
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /inventory/{sku}/usable:
+    get:
+      operationId: getUsableInventory
+      summary: Get usable inventory for a SKU
+      description: >
+        Returns the usable-inventory read model for a SKU: on-hand minus
+        active reservations minus held/unlocated stock, summed across
+        every StockUnit for that SKU. This is a projection, not a stored
+        aggregate — it is what constrains ReserveStock, since total
+        on-hand is not what's available to promise to new demand.
+        Side-effect-free.
+      tags: [Inventory]
+      parameters:
+        - $ref: "#/components/parameters/Sku"
+      responses:
+        "200":
+          description: Usable quantity for the SKU (0 if the SKU is unknown).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UsableInventory"
+              example:
+                sku: SKU-1
+                usable: 7
+        "400":
+          description: SKU path segment missing/empty.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/empty-sku
+                title: SKU must not be empty
+                status: 400
+                detail: sku must not be empty
+                instance: /inventory//usable
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /bins/{binId}/cycle-count:
+    post:
+      operationId: runCycleCount
+      summary: Record a physical cycle count for a bin
+      description: >
+        Verifies a bin's physical contents against system records. If the
+        counted quantity matches system quantity, records a clean
+        CycleCountCompleted. A shortfall (counted < system) marks whichever
+        StockUnits cover the difference fully Unlocated (not split into
+        located/lost sub-quantities — kept simple by design) and publishes
+        ItemUnlocated per unit touched. An overage (counted > system) is
+        reported as a DiscrepancyDetected/CycleCountCompleted(discrepancy=true)
+        pair for a separate receiving/audit process to reconcile — this
+        endpoint does not itself create the extra stock. Each call
+        represents a new physical count event and is intentionally
+        repeatable (not idempotent by design — recounting a bin is a normal
+        operational action).
+      tags: [Bins]
+      parameters:
+        - $ref: "#/components/parameters/BinId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CycleCountRequest"
+            example:
+              countedQuantity: 9
+      responses:
+        "200":
+          description: >
+            Cycle count recorded and reconciled (discrepancy indicates
+            whether counted quantity differed from system quantity).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CycleCountResult"
+              example:
+                binId: A-1-1
+                countedQuantity: 9
+                systemQuantity: 10
+                discrepancy: true
+        "400":
+          description: Malformed JSON body, or binId path segment missing/empty.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/empty-bin-id
+                title: Bin ID must not be empty
+                status: 400
+                detail: bin id must not be empty
+                instance: /bins//cycle-count
+        "404":
+          description: No bin exists with this id.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/bin-not-found
+                title: Bin not found
+                status: 404
+                detail: bin not found
+                instance: /bins/A-1-1/cycle-count
+        "422":
+          description: countedQuantity present but negative.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/negative-quantity
+                title: Quantity must not be negative
+                status: 422
+                detail: quantity must not be negative
+                instance: /bins/A-1-1/cycle-count
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+  parameters:
+    ReservationId:
+      name: id
+      in: path
+      required: true
+      description: The reservation's id, formatted `res-<uuid>`.
+      schema:
+        type: string
+        example: res-a1b2c3d4-0000-0000-0000-000000000001
+    Sku:
+      name: sku
+      in: path
+      required: true
+      description: The stock-keeping unit identifier.
+      schema:
+        type: string
+        example: SKU-1
+    BinId:
+      name: binId
+      in: path
+      required: true
+      description: The bin's coded slot identifier.
+      schema:
+        type: string
+        example: A-1-1
+
+  responses:
+    InternalError:
+      description: An unexpected internal error occurred.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://errors.inventory-storage.warehouse-systems.dev/internal-error
+            title: An unexpected internal error occurred
+            status: 500
+            detail: unexpected adapter failure
+            instance: /stock/stow
+
+  schemas:
+    Problem:
+      type: object
+      description: >
+        RFC 7807 (Problem Details for HTTP APIs) error shape, used for
+        every non-2xx response across this service.
+      required: [type, title, status, detail]
+      properties:
+        type:
+          type: string
+          format: uri
+          description: >
+            A URI identifying the error category (does not need to
+            resolve). Unique per distinct error category in this service.
+          example: https://errors.inventory-storage.warehouse-systems.dev/reservation-not-found
+        title:
+          type: string
+          description: Fixed, human-readable summary of the error category.
+          example: Reservation not found
+        status:
+          type: integer
+          format: int32
+          description: Duplicates the HTTP status code as an integer (RFC 7807 requirement).
+          example: 404
+        detail:
+          type: string
+          description: The specific error message for this occurrence.
+          example: reservation not found
+        instance:
+          type: string
+          description: The request path that produced this error.
+          example: /reservations/does-not-exist
+
+    ReceiveStockRequest:
+      type: object
+      required: [sku, quantity]
+      properties:
+        sku:
+          type: string
+          description: Stock-keeping unit identifier for the inbound goods.
+          example: SKU-1
+        quantity:
+          type: integer
+          format: int32
+          minimum: 1
+          description: Quantity received. Must be a positive integer.
+          example: 10
+
+    StagedReceipt:
+      type: object
+      properties:
+        sku:
+          type: string
+          example: SKU-1
+        quantity:
+          type: integer
+          format: int32
+          example: 10
+        receivedAt:
+          type: string
+          format: date-time
+          description: Timestamp the receipt was staged, RFC 3339.
+          example: "2026-08-22T14:20:00Z"
+
+    StowStockRequest:
+      type: object
+      required: [sku, quantity, binId]
+      properties:
+        sku:
+          type: string
+          description: Stock-keeping unit identifier (item-scan).
+          example: SKU-1
+        quantity:
+          type: integer
+          format: int32
+          minimum: 1
+          description: Quantity to stow. Must be a positive integer.
+          example: 10
+        binId:
+          type: string
+          description: Target bin's coded slot identifier (location-scan).
+          example: A-1-1
+
+    StockUnit:
+      type: object
+      description: A quantity of a SKU at a specific bin.
+      properties:
+        id:
+          type: string
+          description: StockUnit id, formatted `su-<uuid>`.
+          example: su-164710cb-5e14-400b-849c-ed94d8256c6b
+        sku:
+          type: string
+          example: SKU-1
+        binId:
+          type: string
+          example: A-1-1
+        quantity:
+          type: integer
+          format: int32
+          description: Total on-hand quantity at this bin.
+          example: 10
+        reserved:
+          type: integer
+          format: int32
+          description: Portion of quantity currently bound to a Reservation.
+          example: 0
+        state:
+          type: string
+          description: Lifecycle state of the unit.
+          enum: [AVAILABLE, RESERVED, PICKED, REMOVED, UNLOCATED]
+          example: AVAILABLE
+
+    ReserveStockRequest:
+      type: object
+      required: [sku, quantity, demandRef]
+      properties:
+        sku:
+          type: string
+          example: SKU-1
+        quantity:
+          type: integer
+          format: int32
+          minimum: 1
+          description: Quantity to reserve. Must be a positive integer.
+          example: 6
+        demandRef:
+          type: string
+          description: Caller-supplied reference identifying the demand this reservation satisfies (e.g. an order id).
+          example: order-42
+
+    Allocation:
+      type: object
+      description: A specific StockUnit and quantity a Reservation drew from.
+      properties:
+        stockUnitId:
+          type: string
+          example: su-164710cb-5e14-400b-849c-ed94d8256c6b
+        quantity:
+          type: integer
+          format: int32
+          example: 6
+
+    Reservation:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Reservation id, formatted `res-<uuid>`.
+          example: res-a1b2c3d4-0000-0000-0000-000000000001
+        sku:
+          type: string
+          example: SKU-1
+        quantity:
+          type: integer
+          format: int32
+          example: 6
+        demandRef:
+          type: string
+          example: order-42
+        status:
+          type: string
+          enum: [ACTIVE, CONFIRMED, REVOKED, EXPIRED]
+          example: ACTIVE
+        allocations:
+          type: array
+          items:
+            $ref: "#/components/schemas/Allocation"
+        expiresAt:
+          type: string
+          format: date-time
+          description: Timestamp this reservation auto-expires if never confirmed or revoked, RFC 3339.
+          example: "2026-08-22T14:50:00Z"
+
+    UsableInventory:
+      type: object
+      properties:
+        sku:
+          type: string
+          example: SKU-1
+        usable:
+          type: integer
+          format: int32
+          description: On-hand minus active reservations minus held/unlocated stock, summed across all StockUnits for this SKU.
+          example: 7
+
+    CycleCountRequest:
+      type: object
+      required: [countedQuantity]
+      properties:
+        countedQuantity:
+          type: integer
+          format: int32
+          minimum: 0
+          description: Physically counted quantity at the bin. Zero is valid (an empty bin); negative is rejected.
+          example: 9
+
+    CycleCountResult:
+      type: object
+      properties:
+        binId:
+          type: string
+          example: A-1-1
+        countedQuantity:
+          type: integer
+          format: int32
+          example: 9
+        systemQuantity:
+          type: integer
+          format: int32
+          description: Quantity system records show for this bin prior to reconciliation.
+          example: 10
+        discrepancy:
+          type: boolean
+          description: True if countedQuantity differed from systemQuantity.
+          example: true

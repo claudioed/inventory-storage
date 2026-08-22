@@ -53,22 +53,27 @@ func (s *Server) handleReceiveStock(w http.ResponseWriter, r *http.Request) {
 
 	sku, err := shared.NewSKU(req.SKU)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	qty, err := shared.NewPositiveQuantity(req.Quantity)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
 	receipt, err := s.ReceiveStock.Execute(r.Context(), sku, qty)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, stagedReceiptResponse{
+	// 202 Accepted, not 201 Created: a staged receipt has no durable
+	// identity of its own (no ID, no GET route) — it is an acknowledgment
+	// that stock has been accepted into the building, not yet a queryable
+	// resource. The addressable resource (a StockUnit) is created later, at
+	// StowStock.
+	writeJSON(w, http.StatusAccepted, stagedReceiptResponse{
 		SKU:        receipt.SKU.String(),
 		Quantity:   receipt.Quantity.Int(),
 		ReceivedAt: receipt.ReceivedAt.Format(timeFormat),
@@ -83,26 +88,27 @@ func (s *Server) handleStowStock(w http.ResponseWriter, r *http.Request) {
 
 	sku, err := shared.NewSKU(req.SKU)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	qty, err := shared.NewPositiveQuantity(req.Quantity)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	binID, err := shared.NewBinId(req.BinID)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
 	unit, err := s.StowStock.Execute(r.Context(), sku, qty, binID)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
+	w.Header().Set("Location", "/stock/"+unit.ID())
 	writeJSON(w, http.StatusCreated, toStockUnitResponse(unit))
 }
 
@@ -114,28 +120,29 @@ func (s *Server) handleReserveStock(w http.ResponseWriter, r *http.Request) {
 
 	sku, err := shared.NewSKU(req.SKU)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	qty, err := shared.NewPositiveQuantity(req.Quantity)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
 	res, err := s.ReserveStock.Execute(r.Context(), sku, qty, req.DemandRef)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
+	w.Header().Set("Location", "/reservations/"+res.ID())
 	writeJSON(w, http.StatusCreated, toReservationResponse(res))
 }
 
 func (s *Server) handleRevokeReservation(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := s.RevokeReservation.Execute(r.Context(), id); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -144,7 +151,7 @@ func (s *Server) handleRevokeReservation(w http.ResponseWriter, r *http.Request)
 func (s *Server) handleConfirmPick(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := s.ConfirmPick.Execute(r.Context(), id); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -154,13 +161,13 @@ func (s *Server) handleGetUsable(w http.ResponseWriter, r *http.Request) {
 	skuParam := chi.URLParam(r, "sku")
 	sku, err := shared.NewSKU(skuParam)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
 	usable, err := s.GetUsable.Execute(r.Context(), sku)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -171,7 +178,7 @@ func (s *Server) handleRunCycleCount(w http.ResponseWriter, r *http.Request) {
 	binIDParam := chi.URLParam(r, "binId")
 	binID, err := shared.NewBinId(binIDParam)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -181,13 +188,13 @@ func (s *Server) handleRunCycleCount(w http.ResponseWriter, r *http.Request) {
 	}
 	countedQty, err := shared.NewQuantity(req.CountedQuantity)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
 	result, err := s.RunCycleCount.Execute(r.Context(), binID, countedQty)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -230,14 +237,29 @@ func toReservationResponse(res *reservation.Reservation) reservationResponse {
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, dest any) bool {
 	if err := json.NewDecoder(r.Body).Decode(dest); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid request body"})
+		writeProblem(w, http.StatusBadRequest, problemInfo{"malformed-request-body", "The request body is not valid JSON"}, err.Error(), r.URL.Path)
 		return false
 	}
 	return true
 }
 
-func writeError(w http.ResponseWriter, err error) {
-	writeJSON(w, statusFor(err), errorResponse{Error: err.Error()})
+// writeError writes a domain/application error as an RFC 7807
+// (application/problem+json) response. statusFor's status-code mapping is
+// unchanged; this only decides the body shape and Content-Type.
+func writeError(w http.ResponseWriter, r *http.Request, err error) {
+	writeProblem(w, statusFor(err), problemFor(err), err.Error(), r.URL.Path)
+}
+
+func writeProblem(w http.ResponseWriter, status int, info problemInfo, detail, instance string) {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(problemDetails{
+		Type:     problemBaseURI + info.slug,
+		Title:    info.title,
+		Status:   status,
+		Detail:   detail,
+		Instance: instance,
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

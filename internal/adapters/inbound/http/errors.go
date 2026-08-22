@@ -21,11 +21,13 @@ func statusFor(err error) int {
 
 	case errors.Is(err, shared.ErrEmptySKU),
 		errors.Is(err, shared.ErrEmptyBinID),
-		errors.Is(err, shared.ErrNegativeQuantity),
-		errors.Is(err, shared.ErrZeroQuantity),
-		errors.Is(err, stock.ErrStowRequiresItemAndLocation),
-		errors.Is(err, location.ErrInvalidCapacity):
+		errors.Is(err, stock.ErrStowRequiresItemAndLocation):
 		return http.StatusBadRequest
+
+	case errors.Is(err, shared.ErrNegativeQuantity),
+		errors.Is(err, shared.ErrZeroQuantity),
+		errors.Is(err, location.ErrInvalidCapacity):
+		return http.StatusUnprocessableEntity
 
 	case errors.Is(err, location.ErrBinFull),
 		errors.Is(err, location.ErrReleaseExceedsOccupancy),
@@ -40,5 +42,67 @@ func statusFor(err error) int {
 
 	default:
 		return http.StatusInternalServerError
+	}
+}
+
+// problemBaseURI is the namespace for this service's RFC 7807 "type" URIs.
+// It does not need to resolve to a real page — it's an identifier, unique
+// per distinct error category in this service.
+const problemBaseURI = "https://errors.inventory-storage.warehouse-systems.dev/"
+
+// problemInfo is the fixed, category-level (type, title) pair for an RFC
+// 7807 problem response. slug becomes the last path segment of "type";
+// title is a fixed human string for the category (the dynamic detail comes
+// from err.Error() at write time, not from this table).
+type problemInfo struct {
+	slug  string
+	title string
+}
+
+// problemFor maps a typed domain/application error to its RFC 7807
+// (type, title) pair. Mirrors statusFor's error groupings one-for-one —
+// statusFor itself is untouched; this only decides what goes in the body.
+func problemFor(err error) problemInfo {
+	switch {
+	case errors.Is(err, usecases.ErrStockUnitNotFound):
+		return problemInfo{"stock-unit-not-found", "Stock unit not found"}
+	case errors.Is(err, usecases.ErrBinNotFound):
+		return problemInfo{"bin-not-found", "Bin not found"}
+	case errors.Is(err, usecases.ErrReservationNotFound):
+		return problemInfo{"reservation-not-found", "Reservation not found"}
+
+	case errors.Is(err, shared.ErrEmptySKU):
+		return problemInfo{"empty-sku", "SKU must not be empty"}
+	case errors.Is(err, shared.ErrEmptyBinID):
+		return problemInfo{"empty-bin-id", "Bin ID must not be empty"}
+	case errors.Is(err, stock.ErrStowRequiresItemAndLocation):
+		return problemInfo{"stow-requires-item-and-location", "Stow requires both an item scan and a location scan"}
+
+	case errors.Is(err, shared.ErrNegativeQuantity):
+		return problemInfo{"negative-quantity", "Quantity must not be negative"}
+	case errors.Is(err, shared.ErrZeroQuantity):
+		return problemInfo{"zero-quantity", "Quantity must be greater than zero"}
+	case errors.Is(err, location.ErrInvalidCapacity):
+		return problemInfo{"invalid-bin-capacity", "Bin capacity must be greater than zero"}
+
+	case errors.Is(err, location.ErrBinFull):
+		return problemInfo{"bin-full", "Bin is full: capacity exceeded"}
+	case errors.Is(err, location.ErrReleaseExceedsOccupancy):
+		return problemInfo{"release-exceeds-occupancy", "Release exceeds bin occupancy"}
+	case errors.Is(err, usecases.ErrInsufficientUsable), errors.Is(err, stock.ErrInsufficientUsable):
+		return problemInfo{"insufficient-usable", "Requested quantity exceeds usable inventory"}
+	case errors.Is(err, stock.ErrInsufficientReserved):
+		return problemInfo{"insufficient-reserved", "Pick quantity exceeds reserved quantity"}
+	case errors.Is(err, stock.ErrUnitUnlocated):
+		return problemInfo{"unit-unlocated", "Stock unit is unlocated"}
+	case errors.Is(err, reservation.ErrAlreadyResolved):
+		return problemInfo{"reservation-already-resolved", "Reservation is already resolved"}
+	case errors.Is(err, reservation.ErrExpired):
+		return problemInfo{"reservation-expired", "Reservation has expired"}
+	case errors.Is(err, reservation.ErrNoAllocations):
+		return problemInfo{"reservation-no-allocations", "Reservation requires at least one allocation"}
+
+	default:
+		return problemInfo{"internal-error", "An unexpected internal error occurred"}
 	}
 }

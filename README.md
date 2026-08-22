@@ -109,13 +109,15 @@ curl -s localhost:8080/healthz
 
 curl -s -X POST localhost:8080/stock/receive \
   -d '{"sku":"SKU-1","quantity":10}'
+# => 202 Accepted (a staged receipt has no addressable resource yet)
 
-curl -s -X POST localhost:8080/stock/stow \
+curl -s -i -X POST localhost:8080/stock/stow \
   -d '{"sku":"SKU-1","quantity":10,"binId":"A-1-1"}'
+# => 201 Created, Location: /stock/<stock-unit-id>
 
-curl -s -X POST localhost:8080/reservations \
+curl -s -i -X POST localhost:8080/reservations \
   -d '{"sku":"SKU-1","quantity":6,"demandRef":"order-42"}'
-# => {"id":"su-...", ...}
+# => 201 Created, Location: /reservations/<id>, body {"id":"res-...", ...}
 
 curl -s localhost:8080/inventory/SKU-1/usable
 
@@ -127,9 +129,25 @@ curl -s -X POST localhost:8080/bins/A-1-1/cycle-count \
   -d '{"countedQuantity":9}'
 ```
 
-Error responses are `{"error": "..."}` with a status mapped from the typed
-domain/application error (400 invalid input, 404 not found, 409 conflict —
-e.g. bin full, reservation exceeds usable, reservation already resolved).
+Error responses are RFC 7807 (`application/problem+json`), with a status
+mapped from the typed domain/application error (400 missing/malformed
+input, 422 well-formed but semantically invalid values like a non-positive
+quantity, 404 not found, 409 conflict — e.g. bin full, reservation exceeds
+usable, reservation already resolved):
+
+```sh
+curl -s -i -X DELETE localhost:8080/reservations/does-not-exist
+# HTTP/1.1 404 Not Found
+# Content-Type: application/problem+json
+#
+# {
+#   "type": "https://errors.inventory-storage.warehouse-systems.dev/reservation-not-found",
+#   "title": "Reservation not found",
+#   "status": 404,
+#   "detail": "reservation not found",
+#   "instance": "/reservations/does-not-exist"
+# }
+```
 
 ## Integration
 

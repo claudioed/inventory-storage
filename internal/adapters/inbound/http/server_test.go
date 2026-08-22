@@ -85,16 +85,16 @@ func TestHealthz(t *testing.T) {
 func TestReceiveStock_Endpoint(t *testing.T) {
 	ts := newTestServer()
 	rec := ts.do(t, http.MethodPost, "/stock/receive", map[string]any{"sku": "SKU-1", "quantity": 10})
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
 func TestReceiveStock_Endpoint_InvalidQuantity(t *testing.T) {
 	ts := newTestServer()
 	rec := ts.do(t, http.MethodPost, "/stock/receive", map[string]any{"sku": "SKU-1", "quantity": 0})
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -106,6 +106,9 @@ func TestStowStock_Endpoint(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
 	}
+	if loc := rec.Header().Get("Location"); loc == "" || loc == "/stock/" {
+		t.Fatalf("expected non-empty Location header pointing at the created stock unit, got %q", loc)
+	}
 }
 
 func TestStowStock_Endpoint_CapacityExceeded(t *testing.T) {
@@ -116,6 +119,7 @@ func TestStowStock_Endpoint_CapacityExceeded(t *testing.T) {
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
 	}
+	assertProblemDetails(t, rec, http.StatusConflict, "bin-full", "/stock/stow")
 }
 
 func TestStowStock_Endpoint_UnknownBin(t *testing.T) {
@@ -140,6 +144,9 @@ func TestReservationLifecycle_Endpoints(t *testing.T) {
 	}
 	if err := json.Unmarshal(reserveRec.Body.Bytes(), &reserved); err != nil {
 		t.Fatalf("unexpected error decoding response: %v", err)
+	}
+	if loc := reserveRec.Header().Get("Location"); loc != "/reservations/"+reserved.ID {
+		t.Fatalf("expected Location header /reservations/%s, got %q", reserved.ID, loc)
 	}
 
 	usableRec := ts.do(t, http.MethodGet, "/inventory/SKU-1/usable", nil)
@@ -185,6 +192,55 @@ func TestRevokeReservation_Endpoint_UnknownID(t *testing.T) {
 	rec := ts.do(t, http.MethodDelete, "/reservations/does-not-exist", nil)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertProblemDetails(t, rec, http.StatusNotFound, "reservation-not-found", "/reservations/does-not-exist")
+}
+
+func TestReceiveStock_Endpoint_MalformedBody(t *testing.T) {
+	ts := newTestServer()
+	req := httptest.NewRequest(http.MethodPost, "/stock/receive", bytes.NewReader([]byte("{not-json")))
+	rec := httptest.NewRecorder()
+	ts.handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertProblemDetails(t, rec, http.StatusBadRequest, "malformed-request-body", "/stock/receive")
+}
+
+// problemBody mirrors the RFC 7807 (application/problem+json) shape this
+// service's error responses use.
+type problemBody struct {
+	Type     string `json:"type"`
+	Title    string `json:"title"`
+	Status   int    `json:"status"`
+	Detail   string `json:"detail"`
+	Instance string `json:"instance"`
+}
+
+func assertProblemDetails(t *testing.T, rec *httptest.ResponseRecorder, wantStatus int, wantSlug, wantInstance string) {
+	t.Helper()
+	if ct := rec.Header().Get("Content-Type"); ct != "application/problem+json" {
+		t.Fatalf("expected Content-Type application/problem+json, got %q", ct)
+	}
+	var p problemBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &p); err != nil {
+		t.Fatalf("unexpected error decoding problem details: %v (body: %s)", err, rec.Body.String())
+	}
+	wantType := "https://errors.inventory-storage.warehouse-systems.dev/" + wantSlug
+	if p.Type != wantType {
+		t.Fatalf("expected type %q, got %q", wantType, p.Type)
+	}
+	if p.Title == "" {
+		t.Fatalf("expected non-empty title, got empty")
+	}
+	if p.Status != wantStatus {
+		t.Fatalf("expected status %d in body, got %d", wantStatus, p.Status)
+	}
+	if p.Detail == "" {
+		t.Fatalf("expected non-empty detail, got empty")
+	}
+	if p.Instance != wantInstance {
+		t.Fatalf("expected instance %q, got %q", wantInstance, p.Instance)
 	}
 }
 
