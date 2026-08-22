@@ -224,3 +224,34 @@ Each of the four named invariants has a dedicated failing-path test:
 | Stow requires item + location | `TestNewStockUnit_RequiresSKU` / `_RequiresBin` (domain) |
 | Reservation <= usable | `TestStockUnit_Reserve_ExceedsUsable_Rejected` (domain), `TestReserveStock_ExceedsUsable_Rejected` (use case) |
 | Revoke returns to usable | `TestStockUnit_ReleaseReservation_ReturnsToUsable` (domain), `TestRevokeReservation_ReturnsQuantityToUsable` (use case) |
+
+## BDD / Acceptance tests
+
+Executable specifications written in Gherkin and run with
+[godog](https://github.com/cucumber/godog), the official Cucumber
+implementation for Go.
+
+The feature files live under [`features/`](features/) — one per
+aggregate/bounded concept, using the ubiquitous language from `CLAUDE.md`
+(StockUnit, Bin, Stow, Usable inventory, Reservation, Cycle count):
+
+| Feature file | Covers |
+|--------------|--------|
+| `features/stow.feature` | `POST /stock/receive`, `POST /stock/stow` — chaotic stow, bin-capacity rejection |
+| `features/reservation.feature` | `POST /reservations`, `DELETE /reservations/{id}`, `POST /reservations/{id}/confirm-pick` — reserve against usable, revoke, confirm pick |
+| `features/cycle_count.feature` | `POST /bins/{binId}/cycle-count` — clean count vs. discrepancy/Unlocated |
+| `features/usable_inventory.feature` | `GET /inventory/{sku}/usable` — on-hand minus active reservations |
+
+The step definitions live in [`features_test.go`](features_test.go) at the repo
+root. They are true black-box acceptance tests: the real chi router is wired to
+the in-memory outbound adapters, served over `httptest.NewServer`, and driven
+with plain `net/http` requests — no use case is called directly. Every scenario
+gets a fresh server and fresh state via a godog `Before` hook.
+
+Run them locally:
+
+```sh
+go test ./... -run TestFeatures -v
+```
+
+They also run as the `bdd` job in CI.
