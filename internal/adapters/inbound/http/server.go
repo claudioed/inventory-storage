@@ -2,6 +2,7 @@ package http
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -25,8 +26,15 @@ type Server struct {
 }
 
 // NewRouter builds the chi router for every endpoint in CLAUDE.md's REST API.
-func NewRouter(s *Server) http.Handler {
+// A nil logger defaults to slog.Default().
+func NewRouter(s *Server, logger *slog.Logger) http.Handler {
+	if logger == nil {
+		logger = slog.Default()
+	}
+
 	r := chi.NewRouter()
+	r.Use(middleware.RequestID)
+	r.Use(RequestLogger(logger))
 	r.Use(middleware.Recoverer)
 
 	r.Get("/healthz", s.handleHealthz)

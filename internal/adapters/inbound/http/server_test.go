@@ -40,7 +40,7 @@ func newTestServer() testServer {
 		RunCycleCount:     &usecases.RunCycleCount{Stock: stockRepo, Events: publisher, Clock: clock},
 	}
 
-	return testServer{handler: inboundhttp.NewRouter(s), stock: stockRepo, locations: locationRepo}
+	return testServer{handler: inboundhttp.NewRouter(s, nil), stock: stockRepo, locations: locationRepo}
 }
 
 func (ts testServer) seedBin(t *testing.T, id string, capacity int) {

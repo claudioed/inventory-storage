@@ -4,7 +4,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -23,17 +23,19 @@ import (
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatal(err)
+		slog.Error("service exited with error", "error", err)
+		os.Exit(1)
 	}
 }
 
 func run() error {
+	logger := newLogger(getenv("LOG_LEVEL", "info"))
+	slog.SetDefault(logger)
+
 	httpAddr := getenv("HTTP_ADDR", ":8080")
 	databaseURL := os.Getenv("DATABASE_URL")
 	migrationsPath := getenv("MIGRATIONS_PATH", "migrations")
 	eventPublisher := getenv("EVENT_PUBLISHER", "log")
-
-	logger := log.New(os.Stdout, "inventory-storage ", log.LstdFlags)
 
 	stockRepo, locationRepo, reservationRepo, publisher, closeAdapters, err := buildAdapters(databaseURL, migrationsPath, eventPublisher, logger)
 	if err != nil {
@@ -55,13 +57,13 @@ func run() error {
 
 	httpServer := &http.Server{
 		Addr:              httpAddr,
-		Handler:           inboundhttp.NewRouter(server),
+		Handler:           inboundhttp.NewRouter(server, logger),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	errCh := make(chan error, 1)
 	go func() {
-		logger.Printf("listening on %s", httpAddr)
+		logger.Info("http server listening", "addr", httpAddr)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
@@ -81,13 +83,33 @@ func run() error {
 	return httpServer.Shutdown(shutdownCtx)
 }
 
+// newLogger builds the process-wide structured logger. LOG_LEVEL maps
+// debug|info|warn|error (case-insensitive) to the matching slog.Level,
+// defaulting to Info for unset or unrecognized values. Logs are emitted as
+// JSON to stdout.
+func newLogger(level string) *slog.Logger {
+	var lvl slog.Level
+	switch strings.ToLower(level) {
+	case "debug":
+		lvl = slog.LevelDebug
+	case "warn":
+		lvl = slog.LevelWarn
+	case "error":
+		lvl = slog.LevelError
+	default:
+		lvl = slog.LevelInfo
+	}
+
+	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl}))
+}
+
 // buildAdapters wires the Postgres adapters when DATABASE_URL is set, or
 // falls back to the in-memory adapters for local development without a
 // database. The event publisher defaults to that same memory/Postgres
 // choice ("log"), or can be switched to the Kafka integration-events
 // publisher via eventPublisher="kafka" (EVENT_PUBLISHER env), independent of
 // which repos are in use.
-func buildAdapters(databaseURL, migrationsPath, eventPublisher string, logger *log.Logger) (
+func buildAdapters(databaseURL, migrationsPath, eventPublisher string, logger *slog.Logger) (
 	ports.StockRepo, ports.LocationRepo, ports.ReservationRepo, ports.EventPublisher, func(), error,
 ) {
 	noop := func() {}
@@ -101,7 +123,7 @@ func buildAdapters(databaseURL, migrationsPath, eventPublisher string, logger *l
 	)
 
 	if databaseURL == "" {
-		logger.Println("DATABASE_URL not set; using in-memory adapters")
+		logger.Info("database url not configured; using in-memory adapters")
 		stockRepo = memory.NewStockRepo()
 		locationRepo = memory.NewLocationRepo()
 		reservationRepo = memory.NewReservationRepo()
@@ -129,11 +151,11 @@ func buildAdapters(databaseURL, migrationsPath, eventPublisher string, logger *l
 
 	brokers := strings.Split(getenv("KAFKA_BROKERS", "localhost:9092"), ",")
 	writer := kafkaadapter.NewWriter(brokers...)
-	logger.Printf("EVENT_PUBLISHER=kafka; publishing to topic %q on %v", kafkaadapter.Topic, brokers)
+	logger.Info("event publisher configured", "publisher", "kafka", "topic", kafkaadapter.Topic, "brokers", brokers)
 
 	closeAll := func() {
 		if err := writer.Close(); err != nil {
-			logger.Printf("error closing kafka writer: %v", err)
+			logger.Error("error closing kafka writer", "error", err)
 		}
 		closeRepos()
 	}
