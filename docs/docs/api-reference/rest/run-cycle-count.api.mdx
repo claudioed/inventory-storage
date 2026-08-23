@@ -1,0 +1,71 @@
+---
+id: run-cycle-count
+title: "Record a physical cycle count for a bin"
+description: "Verifies a bin's physical contents against system records. If the counted quantity matches system quantity, records a clean CycleCountCompleted. A shortfall (counted < system) marks whichever StockUnits cover the difference fully Unlocated (not split into located/lost sub-quantities — kept simple by design) and publishes ItemUnlocated per unit touched. An overage (counted > system) is reported as a DiscrepancyDetected/CycleCountCompleted(discrepancy=true) pair for a separate receiving/audit process to reconcile — this endpoint does not itself create the extra stock. Each call represents a new physical count event and is intentionally repeatable (not idempotent by design — recounting a bin is a normal operational action)."
+sidebar_label: "Record a physical cycle count for a bin"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "post api-method"
+info_path: docs/api-reference/rest/inventory-storage-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Record a physical cycle count for a bin"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"post"}
+  path={"/bins/{binId}/cycle-count"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+Verifies a bin's physical contents against system records. If the counted quantity matches system quantity, records a clean CycleCountCompleted. A shortfall (counted &lt; system) marks whichever StockUnits cover the difference fully Unlocated (not split into located/lost sub-quantities — kept simple by design) and publishes ItemUnlocated per unit touched. An overage (counted > system) is reported as a DiscrepancyDetected/CycleCountCompleted(discrepancy=true) pair for a separate receiving/audit process to reconcile — this endpoint does not itself create the extra stock. Each call represents a new physical count event and is intentionally repeatable (not idempotent by design — recounting a bin is a normal operational action).
+
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./run-cycle-count.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./run-cycle-count.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./run-cycle-count.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

@@ -1,0 +1,71 @@
+---
+id: revoke-reservation
+title: "Revoke a reservation"
+description: "Cancels an ACTIVE reservation and returns its full reserved quantity to usable inventory on every StockUnit it had allocated from. This is the mechanism that makes reservations safe against physical delivery failure: revoke, then reserve again — the second reservation is free to draw from a different physical holding. Idempotent in effect (a resource that no longer exists or is already resolved simply can't be revoked again), though a second call on an already-resolved reservation is reported as 409, not a silent 204."
+sidebar_label: "Revoke a reservation"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "delete api-method"
+info_path: docs/api-reference/rest/inventory-storage-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Revoke a reservation"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"delete"}
+  path={"/reservations/{id}"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+Cancels an ACTIVE reservation and returns its full reserved quantity to usable inventory on every StockUnit it had allocated from. This is the mechanism that makes reservations safe against physical delivery failure: revoke, then reserve again — the second reservation is free to draw from a different physical holding. Idempotent in effect (a resource that no longer exists or is already resolved simply can't be revoked again), though a second call on an already-resolved reservation is reported as 409, not a silent 204.
+
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./revoke-reservation.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./revoke-reservation.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./revoke-reservation.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

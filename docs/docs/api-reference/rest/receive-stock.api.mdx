@@ -1,0 +1,69 @@
+---
+id: receive-stock
+title: "Acknowledge inbound stock for a SKU"
+description: "Stages a quantity of a SKU as received into the building (publishes StockReceived) without assigning it to a bin yet. This does NOT create a StockUnit aggregate: a StockUnit requires both an item-scan and a location-scan by construction (the stow-requires-both invariant), and a staged receipt has no bin yet. The durable, addressable record only starts at StowStock — that is why this operation returns 202 Accepted rather than 201 Created: there is no resource here to hand back a Location for."
+sidebar_label: "Acknowledge inbound stock for a SKU"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "post api-method"
+info_path: docs/api-reference/rest/inventory-storage-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Acknowledge inbound stock for a SKU"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"post"}
+  path={"/stock/receive"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+Stages a quantity of a SKU as received into the building (publishes StockReceived) without assigning it to a bin yet. This does NOT create a StockUnit aggregate: a StockUnit requires both an item-scan and a location-scan by construction (the stow-requires-both invariant), and a staged receipt has no bin yet. The durable, addressable record only starts at StowStock — that is why this operation returns 202 Accepted rather than 201 Created: there is no resource here to hand back a Location for.
+
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./receive-stock.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./receive-stock.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

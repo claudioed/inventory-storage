@@ -1,0 +1,110 @@
+import type { SidebarsConfig } from "@docusaurus/plugin-content-docs";
+
+const sidebar: SidebarsConfig = {
+  apisidebar: [
+    {
+      type: "doc",
+      id: "api-reference/rest/inventory-storage-api",
+    },
+    {
+      type: "category",
+      label: "Stock",
+      link: {
+        type: "doc",
+        id: "api-reference/rest/stock",
+      },
+      items: [
+        {
+          type: "doc",
+          id: "api-reference/rest/receive-stock",
+          label: "Acknowledge inbound stock for a SKU",
+          className: "api-method post",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/stow-stock",
+          label: "Stow received stock into a bin",
+          className: "api-method post",
+        },
+      ],
+    },
+    {
+      type: "category",
+      label: "Reservations",
+      link: {
+        type: "doc",
+        id: "api-reference/rest/reservations",
+      },
+      items: [
+        {
+          type: "doc",
+          id: "api-reference/rest/reserve-stock",
+          label: "Create a revocable reservation against usable inventory",
+          className: "api-method post",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/revoke-reservation",
+          label: "Revoke a reservation",
+          className: "api-method delete",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/confirm-pick",
+          label: "Confirm a reservation's physical pick",
+          className: "api-method post",
+        },
+      ],
+    },
+    {
+      type: "category",
+      label: "Inventory",
+      link: {
+        type: "doc",
+        id: "api-reference/rest/inventory",
+      },
+      items: [
+        {
+          type: "doc",
+          id: "api-reference/rest/get-usable-inventory",
+          label: "Get usable inventory for a SKU",
+          className: "api-method get",
+        },
+      ],
+    },
+    {
+      type: "category",
+      label: "Bins",
+      link: {
+        type: "doc",
+        id: "api-reference/rest/bins",
+      },
+      items: [
+        {
+          type: "doc",
+          id: "api-reference/rest/run-cycle-count",
+          label: "Record a physical cycle count for a bin",
+          className: "api-method post",
+        },
+      ],
+    },
+    {
+      type: "category",
+      label: "Health",
+      link: {
+        type: "doc",
+        id: "api-reference/rest/health",
+      },
+      items: [
+        {
+          type: "doc",
+          id: "api-reference/rest/get-healthz",
+          label: "Liveness probe",
+          className: "api-method get",
+        },
+      ],
+    },
+  ],
+};
+
+export default sidebar.apisidebar;

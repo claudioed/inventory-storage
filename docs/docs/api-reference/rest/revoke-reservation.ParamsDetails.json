@@ -1,0 +1,1 @@
+{"parameters":[{"name":"id","in":"path","required":true,"description":"The reservation's id, formatted `res-<uuid>`.","schema":{"type":"string","example":"res-a1b2c3d4-0000-0000-0000-000000000001"}}]}

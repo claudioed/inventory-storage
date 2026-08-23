@@ -1,0 +1,61 @@
+---
+id: get-healthz
+title: "Liveness probe"
+description: "Returns 200 with a static status body if the process is up. Does not check downstream dependencies (e.g. Postgres, Kafka) — it is a liveness check, not a readiness check."
+sidebar_label: "Liveness probe"
+hide_title: true
+hide_table_of_contents: true
+api: eJzVVttuGzcQ/ZUBH1pLXUluXhIoT7m1MZKiRmwjD3GAjMhZLSMuueHMSt4YAvoR/cJ+STFcWXYS9APqB0viLmfmnDlzuTWpo4ziUzxzZmnWJK8JgzRfTWUcsc2+04dmad6R9DkyPDo9hZ2XBhBYULwtHz3DKrkBfA3SEHQ5WWIGz9B3c3iZiCEmAduQ3YBLu8iSCVtw1FF0FK0nhhOar+dwnljWmbiCN1hvcAL//PU3eFFbCMFvKarlYqkqRhEyofP3x/PraCojuGaz/GBGQOZjZTJxlyITm+WteXR6qh/fgrygvPWWii91NTeVsSkKRdGXseuCt4WuxWfWG7eGbUMt6jcZOjJLk1afyYqpTJeVXPGjv5GlB++xZB/XpjJ0g20XytWN2e8fHNzfGh/pX2VakiYdsqVuUBqzNIvmmDimvKWs4G9Nn4NZmkakWy4WIVkMTWJZPjl9cvpDit/qY3C0pZC6VjHvP6o122cvg1l++FgZH+tUQHgpIZ/FLUVJeYCf4EJSxjXBs/MzUxkNYbT76/x0/qO3y4bg/R8XM/GUAXtpUvYqqC1BJpuyg1TDrsGS+YaCg11DmSrA6MbzLmW1pe+N+ugZV4EqqFMuMtxhpib1TDMeWKhl6AJKnXI7h8vGq2b76MhByfGNgFfeFTnDsxa/pjhjGQKBbTCp1E8yRpfaCbCk3VJ95CKWmKD2N+RU+K63Asp0iU3FixF8LK7AC7XQ4gArKjbIgY+SAOMAdSaClY8jQtH4+KDHkRAuoOgGreh7Cjpgid/HOZwJcK8CJYZrw5LsRgsjeBmuDUgql9+nvIHzgDH6uP4BvvptcUOq/iMCLa9tssosZNKIynkFnAChRh8UdzOwV/V03m4gZXCk9ZMHiLSlDCzKHCsVKTvKy2L2aAwsRsCww4GVGXW4IVfiyTRjFM+1Jwd1Ti0gOF/XlCnKvd8mBefjen4dr+OZMOB6nWmNolgywXR6oYRcRS/TKZwgfOkxipdBxYNw8eYKUDsJd2R97W3hV3NHBcTRTclfgzxmIQyQIsEmpl0cM5eyyqEOuF6Tg6tYWCQ3qWA6fe7j4u2B1TEIm5R9DknGljpqyGKH1svwtKhCQ1PBJGv7bvhOKAddzvhQeUWtk1FA0+m7e4JHf/eJXPmodCn6IxOSwFGL0VV3DV58S6mXyRyuzVWprWsD/ljxyk+Ks6bIxseeAe2hfo+O+fBEC3jR3/EBozxLZ+exmG3SmYA+Hn5/o/+dDwECCQypP1insfln3B1juENSRPBnL4ruoZmfDwWPeVhq8bi7saSiraBD/c+N7yrIqRcCZE7Wq4hKZluMI8kjsoUgb3gRcJUynMihU31bYQuo+1D7ELSpzOiGbK93J0+/8e/IekcwVeBTzUMmS0pkytrLyCLLITdPS24fXraZUEpGGU5Utl1OW6+tVwPwPLafOiNL7q30mRZM5GYORRUYLeUIkhwOh3Ea4fXl5fmMbrrE5OC4IUzm8CrnlOE4RwFtTswjyc/Oz6Bngne/vYDHT04fw8mnh/Oyy2kVqP1F5+anCZyPP+ElCfrA48jWPoS2jNqI7X+Nl5MXKRM8P/SuF2PvmpTJ2SWWFuMDA2/vFgb1T98Podv76f4/XHDGPULRL7qAPpp9Nc7728NS8MHcLQUfK6NzX49ub1fIdJXDfq/HX3rKh9m+xey1yPXXvtK7jnLZIjY0mKV5Zi11unJsMfTq+od9SPeF43ry+6tLs9//C2cHr2w=
+sidebar_class_name: "get api-method"
+info_path: docs/api-reference/rest/inventory-storage-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Liveness probe"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"get"}
+  path={"/healthz"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+Returns 200 with a static status body if the process is up. Does not check downstream dependencies (e.g. Postgres, Kafka) — it is a liveness check, not a readiness check.
+
+
+<ParamsDetails>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./get-healthz.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./get-healthz.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

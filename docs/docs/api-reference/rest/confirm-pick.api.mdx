@@ -1,0 +1,71 @@
+---
+id: confirm-pick
+title: "Confirm a reservation's physical pick"
+description: "Consumes a reservation: for every Allocation it holds, the allocated quantity is physically removed from its StockUnit (StockUnit transitions toward PICKED/REMOVED) and the corresponding bin capacity is released. This is a terminal, one-way command on the resource in the domain command style (not forced into PUT/PATCH) — a reservation that is already resolved, expired, or has no allocations cannot be confirmed again."
+sidebar_label: "Confirm a reservation's physical pick"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "post api-method"
+info_path: docs/api-reference/rest/inventory-storage-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Confirm a reservation's physical pick"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"post"}
+  path={"/reservations/{id}/confirm-pick"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+Consumes a reservation: for every Allocation it holds, the allocated quantity is physically removed from its StockUnit (StockUnit transitions toward PICKED/REMOVED) and the corresponding bin capacity is released. This is a terminal, one-way command on the resource in the domain command style (not forced into PUT/PATCH) — a reservation that is already resolved, expired, or has no allocations cannot be confirmed again.
+
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./confirm-pick.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./confirm-pick.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./confirm-pick.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

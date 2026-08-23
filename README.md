@@ -7,6 +7,17 @@ exact bin. Supplies "stock reality" to Work Planning and makes allocation a
 **revocable reservation** so a failed physical delivery never strands an
 order.
 
+## Documentation
+
+Full documentation site: **https://claudioed.github.io/inventory-storage/**
+
+Business context and domain vision, the DDD model (subdomain classification,
+aggregates and invariants, domain events, use cases), an API reference
+generated from `apis/openapi.yaml` plus a hand-authored Events page from
+`apis/asyncapi.yaml`, the ecosystem context map, and the Architecture Decision
+Records. Source lives in [`docs/`](docs/) (Docusaurus); it is built and
+deployed to GitHub Pages by [`.github/workflows/docs.yml`](.github/workflows/docs.yml).
+
 ## Layering (hexagonal / ports & adapters)
 
 Strict dependency rule: **domain depends on nothing; application depends on

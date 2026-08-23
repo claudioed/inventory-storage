@@ -1,0 +1,69 @@
+---
+id: stow-stock
+title: "Stow received stock into a bin"
+description: "Places a quantity of a SKU into a specific bin, requiring BOTH an item-scan (sku) and a location-scan (binId) — this is the only path that creates a StockUnit aggregate, and skipping either scan is precisely how inventory gets lost, so both are mandatory. Respects the bin's capacity: a stow that would exceed sum(occupied) <= capacity is rejected with 409. Chaotic storage means any SKU may be stowed into any free bin — there is no fixed product-to-bin mapping."
+sidebar_label: "Stow received stock into a bin"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "post api-method"
+info_path: docs/api-reference/rest/inventory-storage-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Stow received stock into a bin"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"post"}
+  path={"/stock/stow"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+Places a quantity of a SKU into a specific bin, requiring BOTH an item-scan (sku) and a location-scan (binId) — this is the only path that creates a StockUnit aggregate, and skipping either scan is precisely how inventory gets lost, so both are mandatory. Respects the bin's capacity: a stow that would exceed sum(occupied) &lt; capacity is rejected with 409. Chaotic storage means any SKU may be stowed into any free bin — there is no fixed product-to-bin mapping.
+
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./stow-stock.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./stow-stock.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

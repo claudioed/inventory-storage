@@ -1,0 +1,71 @@
+---
+id: get-usable-inventory
+title: "Get usable inventory for a SKU"
+description: "Returns the usable-inventory read model for a SKU: on-hand minus active reservations minus held/unlocated stock, summed across every StockUnit for that SKU. This is a projection, not a stored aggregate — it is what constrains ReserveStock, since total on-hand is not what's available to promise to new demand. Side-effect-free."
+sidebar_label: "Get usable inventory for a SKU"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "get api-method"
+info_path: docs/api-reference/rest/inventory-storage-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Get usable inventory for a SKU"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"get"}
+  path={"/inventory/{sku}/usable"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+Returns the usable-inventory read model for a SKU: on-hand minus active reservations minus held/unlocated stock, summed across every StockUnit for that SKU. This is a projection, not a stored aggregate — it is what constrains ReserveStock, since total on-hand is not what's available to promise to new demand. Side-effect-free.
+
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./get-usable-inventory.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./get-usable-inventory.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./get-usable-inventory.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      
