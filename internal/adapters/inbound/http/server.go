@@ -7,6 +7,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/riandyrn/otelchi"
+	otelchimetric "github.com/riandyrn/otelchi/metric"
 
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
 	"github.com/claudioed/inventory-storage/internal/domain/reservation"
@@ -25,15 +27,35 @@ type Server struct {
 	RunCycleCount     *usecases.RunCycleCount
 }
 
+// DefaultServiceName labels this service's spans and metrics when the caller
+// does not supply one. It matches the OTel resource's service.name.
+const DefaultServiceName = "inventory-storage"
+
 // NewRouter builds the chi router for every endpoint in CLAUDE.md's REST API.
-// A nil logger defaults to slog.Default().
-func NewRouter(s *Server, logger *slog.Logger) http.Handler {
+// A nil logger defaults to slog.Default(); an empty serviceName defaults to
+// DefaultServiceName.
+//
+// Middleware order matters here. otelchi runs before RequestLogger so the
+// request context already carries a span by the time a line is logged, which
+// is what lets the telemetry slog handler stamp trace_id/span_id onto it.
+// WithChiRoutes resolves the route pattern up front, so spans are named
+// "/reservations/{id}" rather than one distinct name per reservation id.
+func NewRouter(s *Server, logger *slog.Logger, serviceName string) http.Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	if serviceName == "" {
+		serviceName = DefaultServiceName
+	}
 
 	r := chi.NewRouter()
+	metricCfg := otelchimetric.NewBaseConfig(serviceName)
+
 	r.Use(middleware.RequestID)
+	r.Use(otelchi.Middleware(serviceName, otelchi.WithChiRoutes(r)))
+	// Emits http.server.request.duration (seconds) per OTel HTTP semantic
+	// conventions; no hand-rolled histogram needed.
+	r.Use(otelchimetric.NewServerRequestDuration(metricCfg))
 	r.Use(RequestLogger(logger))
 	r.Use(middleware.Recoverer)
 

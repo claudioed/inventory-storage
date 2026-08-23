@@ -7,6 +7,12 @@ import (
 	"time"
 
 	kafkago "github.com/segmentio/kafka-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/kafka"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/memory"
@@ -162,5 +168,133 @@ func TestPublisher_IgnoresOtherDomainEvents(t *testing.T) {
 	}
 	if len(writer.messages) != 0 {
 		t.Errorf("expected no message written for a non-integration event, got %d", len(writer.messages))
+	}
+}
+
+// TestPublisher_InjectsTraceContextIntoHeaders proves the published message
+// carries the W3C traceparent for the publish span, which is what lets
+// wes-work-planning's consumer parent its span onto this one. It also pins
+// the span's name and messaging attributes, since those are the fleet-wide
+// convention the other four services follow.
+func TestPublisher_InjectsTraceContextIntoHeaders(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	installTracing(t, sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder)))
+
+	writer := &fakeWriter{}
+	pub := kafka.NewPublisher(writer, memory.NewReservationRepo())
+
+	sku, _ := shared.NewSKU("SKU-1")
+	qty, _ := shared.NewPositiveQuantity(5)
+	event := shared.NewStockReserved(time.Now(), "res-1", sku, qty, "order-42")
+
+	traceID, err := trace.TraceIDFromHex("4bf92f3577b34da6a3ce929d0e0e4736")
+	if err != nil {
+		t.Fatalf("TraceIDFromHex: %v", err)
+	}
+	spanID, err := trace.SpanIDFromHex("00f067aa0ba902b7")
+	if err != nil {
+		t.Fatalf("SpanIDFromHex: %v", err)
+	}
+	ctx := trace.ContextWithSpanContext(context.Background(), trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	}))
+
+	if err := pub.Publish(ctx, event); err != nil {
+		t.Fatalf("Publish returned error: %v", err)
+	}
+
+	if len(writer.messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(writer.messages))
+	}
+
+	var traceparent string
+	for _, h := range writer.messages[0].Headers {
+		if h.Key == "traceparent" {
+			traceparent = string(h.Value)
+		}
+	}
+	if traceparent == "" {
+		t.Fatalf("no traceparent header on the published message: %+v", writer.messages[0].Headers)
+	}
+
+	spans := recorder.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("recorded %d spans, want 1", len(spans))
+	}
+	published := spans[0]
+
+	if published.Name() != "kafka.publish "+kafka.Topic {
+		t.Errorf("span name = %q, want %q", published.Name(), "kafka.publish "+kafka.Topic)
+	}
+	if published.SpanKind() != trace.SpanKindProducer {
+		t.Errorf("span kind = %v, want producer", published.SpanKind())
+	}
+	if published.Parent().SpanID() != spanID {
+		t.Errorf("publish span parent = %s, want the caller's span %s", published.Parent().SpanID(), spanID)
+	}
+
+	// The traceparent must carry the shared trace id and the publish span's
+	// own id — a consumer extracting it lands on this trace, as a child of
+	// this span rather than a sibling.
+	want := "00-" + traceID.String() + "-" + published.SpanContext().SpanID().String() + "-01"
+	if traceparent != want {
+		t.Errorf("traceparent = %q, want %q", traceparent, want)
+	}
+
+	attrs := map[string]string{}
+	for _, attr := range published.Attributes() {
+		attrs[string(attr.Key)] = attr.Value.AsString()
+	}
+	if attrs["messaging.system"] != "kafka" {
+		t.Errorf("messaging.system = %q, want kafka", attrs["messaging.system"])
+	}
+	if attrs["messaging.destination.name"] != kafka.Topic {
+		t.Errorf("messaging.destination.name = %q, want %q", attrs["messaging.destination.name"], kafka.Topic)
+	}
+	if attrs["messaging.message.event_type"] != "StockReserved" {
+		t.Errorf("messaging.message.event_type = %q, want StockReserved", attrs["messaging.message.event_type"])
+	}
+}
+
+// installTracing points the globals at tp and the W3C propagator for the
+// duration of one test, restoring whatever was there before.
+func installTracing(t *testing.T, tp trace.TracerProvider) {
+	t.Helper()
+
+	previousTracer := otel.GetTracerProvider()
+	previousPropagator := otel.GetTextMapPropagator()
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previousTracer)
+		otel.SetTextMapPropagator(previousPropagator)
+	})
+}
+
+// TestPublisher_NoTraceContextWithoutASpan covers the un-instrumented case —
+// no Setup, so the global provider is the no-op one. Publishing must still
+// work and must leave the headers clean rather than stamping on an all-zero
+// traceparent that a consumer would try to parent onto.
+func TestPublisher_NoTraceContextWithoutASpan(t *testing.T) {
+	installTracing(t, noop.NewTracerProvider())
+
+	writer := &fakeWriter{}
+	pub := kafka.NewPublisher(writer, memory.NewReservationRepo())
+
+	sku, _ := shared.NewSKU("SKU-1")
+	qty, _ := shared.NewPositiveQuantity(5)
+	event := shared.NewStockReserved(time.Now(), "res-1", sku, qty, "order-42")
+
+	if err := pub.Publish(context.Background(), event); err != nil {
+		t.Fatalf("Publish returned error: %v", err)
+	}
+
+	for _, h := range writer.messages[0].Headers {
+		if h.Key == "traceparent" {
+			t.Errorf("unexpected traceparent header with no active span: %q", h.Value)
+		}
 	}
 }

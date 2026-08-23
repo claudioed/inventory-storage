@@ -220,6 +220,91 @@ docker exec -it warehouse-kafka /opt/kafka/bin/kafka-console-consumer.sh \
 # then drive a reservation + revoke through the API (see curl walkthrough above)
 ```
 
+## Observability
+
+Traces and metrics are exported over **OTLP/gRPC** to an OpenTelemetry
+Collector; logs stay on stdout as JSON and carry the ids that tie them back to
+a trace. There is no `/metrics` endpoint — Prometheus exposition is the
+Collector's job, not this service's.
+
+### Environment variables
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | Collector's OTLP/gRPC receiver. Accepts a bare `host:port` (plaintext) or a full URL (`https://…` for TLS). |
+| `OTEL_SERVICE_NAME` | `inventory-storage` | `service.name` resource attribute, and the span/metric scope name. |
+| `SERVICE_VERSION` | `dev` | `service.version` resource attribute. |
+| `ENVIRONMENT` | `local` | `deployment.environment.name` resource attribute. |
+| `LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error`, case-insensitive. Also gates the OTel SDK's own diagnostics, which are bridged onto the same JSON logger. |
+
+A Collector is *expected* at `OTEL_EXPORTER_OTLP_ENDPOINT`, but is never
+required: the exporters dial lazily and no blocking dial option is set, so a
+Collector that is down or absent costs telemetry and nothing else. Startup,
+request latency and exit code are all unaffected — a failed final flush is
+logged at `WARN`, not returned. In the `warehouse-infra` kind cluster the
+endpoint points at the in-cluster Collector Service
+(`otel-collector.observability.svc.cluster.local:4317`, set by the Helm chart's
+`otel` values block).
+
+### What gets exported
+
+**Traces** — one server span per HTTP request, named after the *chi route
+pattern* rather than the raw path (`/reservations/{id}`, not one span name per
+reservation id), with these as children:
+
+- every Postgres query, prepare, batch, copy and pool acquire, via `otelpgx`.
+  Statements are normalized, so bound arguments — SKUs, bin codes, demand
+  references — never leave the process as span attributes;
+- `kafka.publish warehouse.inventory.events` for each integration event, with
+  the W3C `traceparent` injected into the message headers. A consumer that
+  extracts from those headers joins *this* trace, which is what makes the
+  reserve → release path visible end to end across services.
+
+**Metrics**
+
+- `http.server.request.duration` (histogram, seconds) — OTel HTTP semantic
+  conventions, from `otelchi`;
+- `inventory.reservations` (counter) — the business signal, with an
+  `outcome` attribute of `created` or `revoked`. It is recorded in the
+  `ReserveStock` / `RevokeReservation` use cases, not the HTTP handler, so it
+  counts reservations that were actually bound and durably saved rather than
+  requests that merely arrived;
+- Go runtime metrics (goroutines, GC, memory) via
+  `contrib/instrumentation/runtime`.
+
+**Logs** stay `log/slog` JSON on stdout. Any record written with a
+span-carrying context gains `trace_id` and `span_id`, so a log line pivots
+straight to its trace:
+
+```json
+{"time":"2026-08-23T20:09:13.9-03:00","level":"INFO","msg":"http request","method":"POST","path":"/reservations","status":201,"duration_ms":52,"trace_id":"0a225d107cf073c4f1f4ea2cadeb2941","span_id":"818a21eae51ab9de"}
+```
+
+### Trying it locally
+
+```sh
+# a Collector that just prints what it receives
+cat > /tmp/otelcol.yaml <<'YAML'
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+exporters:
+  debug:
+    verbosity: detailed
+service:
+  pipelines:
+    traces:  {receivers: [otlp], exporters: [debug]}
+    metrics: {receivers: [otlp], exporters: [debug]}
+YAML
+docker run --rm -p 4317:4317 -v /tmp/otelcol.yaml:/etc/otelcol-contrib/config.yaml \
+  otel/opentelemetry-collector-contrib:latest
+
+# in another shell
+go run ./cmd/inventory        # then drive the curl walkthrough above
+```
+
 ## Local development / quality gate
 
 Every CI sensor is also a `make` target, so the same feedback is available

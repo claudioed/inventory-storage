@@ -131,3 +131,14 @@ func (f *failingReservationRepo) NextID(ctx context.Context) (string, error) {
 	}
 	return f.delegate.NextID(ctx)
 }
+
+// recordingMetrics counts the ports.ReservationMetrics calls a use case
+// makes, so tests can assert the business counter moves for the right
+// outcome — and only on the success path.
+type recordingMetrics struct {
+	created int
+	revoked int
+}
+
+func (m *recordingMetrics) ReservationCreated(context.Context) { m.created++ }
+func (m *recordingMetrics) ReservationRevoked(context.Context) { m.revoked++ }

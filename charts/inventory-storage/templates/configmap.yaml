@@ -7,6 +7,12 @@ metadata:
 data:
   HTTP_ADDR: {{ .Values.config.httpAddr | quote }}
   EVENT_PUBLISHER: {{ .Values.config.eventPublisher | quote }}
+  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  ENVIRONMENT: {{ .Values.environment | quote }}
+  {{- if .Values.otel.enabled }}
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.otel.endpoint | quote }}
+  OTEL_SERVICE_NAME: {{ .Values.otel.serviceName | quote }}
+  {{- end }}
   {{- if .Values.kafka.enabled }}
   KAFKA_BROKERS: {{ .Values.kafka.brokers | quote }}
   {{- end }}

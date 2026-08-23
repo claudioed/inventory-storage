@@ -22,11 +22,11 @@ func NewLogPublisher(logger *slog.Logger) *LogPublisher {
 	return &LogPublisher{logger: logger}
 }
 
-func (p *LogPublisher) Publish(_ context.Context, event shared.DomainEvent) error {
+func (p *LogPublisher) Publish(ctx context.Context, event shared.DomainEvent) error {
 	payload, err := json.Marshal(event)
 	if err != nil {
 		return err
 	}
-	p.logger.Info("domain event published", "event_name", event.EventName(), "payload", json.RawMessage(payload))
+	p.logger.InfoContext(ctx, "domain event published", "event_name", event.EventName(), "payload", json.RawMessage(payload))
 	return nil
 }

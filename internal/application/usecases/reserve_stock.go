@@ -24,6 +24,7 @@ type ReserveStock struct {
 	Reservations ports.ReservationRepo
 	Events       ports.EventPublisher
 	Clock        ports.Clock
+	Metrics      ports.ReservationMetrics
 	Timeout      time.Duration
 }
 
@@ -99,6 +100,10 @@ func (uc *ReserveStock) Execute(ctx context.Context, sku shared.SKU, qty shared.
 	}
 	if err := uc.Events.Publish(ctx, shared.NewStockReserved(now, res.ID(), sku, qty, demandRef)); err != nil {
 		return nil, err
+	}
+
+	if uc.Metrics != nil {
+		uc.Metrics.ReservationCreated(ctx)
 	}
 
 	return res, nil
