@@ -1,5 +1,12 @@
 # Inventory & Storage
 
+> **⚠️ Study project.** This repository is an educational exercise in
+> Domain-Driven Design applied to warehouse management/execution systems. It
+> follows real industry-standard patterns and terminology (WMS/WES/WCS,
+> chaotic storage, CloudEvents, RFC 7807, hexagonal architecture) but is
+> **not a production system** and is **not affiliated with, endorsed by, or
+> representative of Amazon or any other company**.
+
 The WMS-tier authoritative record of **what is held where, and what portion
 is usable**. Implements Amazon-style **chaotic (random) stow**: no fixed
 product location — an item goes to any free bin, and the system records the
