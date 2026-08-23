@@ -15,6 +15,11 @@ import (
 
 	"github.com/google/uuid"
 	kafkago "github.com/segmentio/kafka-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/claudioed/inventory-storage/internal/application/ports"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
@@ -25,6 +30,14 @@ const Topic = "warehouse.inventory.events"
 
 // Source identifies this service in the event envelope.
 const Source = "inventory-storage"
+
+// tracerName scopes the publish spans this adapter emits.
+const tracerName = "github.com/claudioed/inventory-storage/internal/adapters/outbound/kafka"
+
+// spanName follows the fleet-wide convention for messaging spans:
+// "kafka.publish <topic>" on the producer side, "kafka.consume <topic>" on
+// the consumer side. This service only publishes.
+const spanName = "kafka.publish " + Topic
 
 // ErrReservationNotFound is returned when a ReservationRevoked event
 // references a reservation the repo no longer has (should not happen: the
@@ -117,5 +130,29 @@ func (p *Publisher) Publish(ctx context.Context, event shared.DomainEvent) error
 		return err
 	}
 
-	return p.writer.WriteMessages(ctx, kafkago.Message{Value: msg})
+	ctx, span := otel.Tracer(tracerName).Start(ctx, spanName,
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(
+			semconv.MessagingSystemKafka,
+			semconv.MessagingDestinationName(Topic),
+			semconv.MessagingOperationName("publish"),
+			semconv.MessagingMessageID(env.EventID),
+			attribute.String("messaging.message.event_type", env.EventType),
+		),
+	)
+	defer span.End()
+
+	// Inject after starting the span so the headers carry *this* span as the
+	// parent: that is what stitches the downstream consumer's trace onto
+	// this one.
+	headers := []kafkago.Header{}
+	otel.GetTextMapPropagator().Inject(ctx, headerCarrier{headers: &headers})
+
+	if err := p.writer.WriteMessages(ctx, kafkago.Message{Value: msg, Headers: headers}); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+
+	return nil
 }

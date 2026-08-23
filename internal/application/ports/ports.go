@@ -41,6 +41,15 @@ type EventPublisher interface {
 	Publish(ctx context.Context, event shared.DomainEvent) error
 }
 
+// ReservationMetrics records reservation lifecycle outcomes so the business
+// signal (how much demand is bound, how much comes back) is observable
+// independently of HTTP traffic. Use cases treat a nil value as "not
+// instrumented", so wiring it is optional.
+type ReservationMetrics interface {
+	ReservationCreated(ctx context.Context)
+	ReservationRevoked(ctx context.Context)
+}
+
 // Clock abstracts current time so use cases and tests are deterministic.
 type Clock interface {
 	Now() time.Time

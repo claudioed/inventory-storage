@@ -14,6 +14,7 @@ type RevokeReservation struct {
 	Reservations ports.ReservationRepo
 	Events       ports.EventPublisher
 	Clock        ports.Clock
+	Metrics      ports.ReservationMetrics
 }
 
 func (uc *RevokeReservation) Execute(ctx context.Context, reservationID string) error {
@@ -49,5 +50,13 @@ func (uc *RevokeReservation) Execute(ctx context.Context, reservationID string) 
 		return err
 	}
 
-	return uc.Events.Publish(ctx, shared.NewReservationRevoked(uc.Clock.Now(), res.ID()))
+	if err := uc.Events.Publish(ctx, shared.NewReservationRevoked(uc.Clock.Now(), res.ID())); err != nil {
+		return err
+	}
+
+	if uc.Metrics != nil {
+		uc.Metrics.ReservationRevoked(ctx)
+	}
+
+	return nil
 }
