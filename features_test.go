@@ -77,7 +77,7 @@ func (w *world) start() {
 		RunCycleCount:     &usecases.RunCycleCount{Stock: stockRepo, Events: publisher, Clock: clock},
 	}
 
-	w.server = httptest.NewServer(inboundhttp.NewRouter(s))
+	w.server = httptest.NewServer(inboundhttp.NewRouter(s, nil))
 	w.stock = stockRepo
 	w.locations = locationRepo
 	w.publisher = publisher
