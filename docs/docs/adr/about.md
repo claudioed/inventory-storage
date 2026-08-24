@@ -65,6 +65,7 @@ Typos, broken links and formatting are of course fair game.
 | [0005](./0005-rfc-7807-problem-details.md) | RFC 7807 Problem Details for all error responses | Accepted |
 | [0006](./0006-arch-go-fitness-tests.md) | arch-go fitness tests to enforce the dependency rule | Accepted |
 | [0007](./0007-godog-bdd-acceptance-tests.md) | godog/Gherkin acceptance tests as executable specification | Accepted |
+| [0008](./0008-mcp-inbound-adapter.md) | Model Context Protocol as an inbound adapter, not a new service | Accepted |
 
 Each of these reconstructs a decision that is actually visible in this
 repository's history, `CLAUDE.md`, `TASKS.md` or code — none is a generic
