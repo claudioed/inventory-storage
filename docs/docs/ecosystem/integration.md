@@ -21,10 +21,22 @@ operator needs to run it against the shared broker.
 
 ## What this service consumes
 
-**Nothing.** There is no inbound Kafka adapter in this repository. Everything
-that changes state here arrives as an explicit HTTP command against
-[the REST API](/docs/api-reference), which runs this service's own invariants
-before anything is written.
+**No Kafka topic.** There is no inbound Kafka adapter in this repository.
+Everything that changes state here arrives as an explicit HTTP command
+against [the REST API](/docs/api-reference), which runs this service's own
+invariants before anything is written.
+
+**One synchronous HTTP dependency, added in ADR 0009.** `StowStock` reads
+`facility-layout`'s `GET /locations/{locationCode}/classification` when the
+SKU being stowed carries the `Hazmat` or `TemperatureSensitive` handling tag,
+to enforce placement rules (hazmat-rated zone, matching temperature class).
+See [ADR 0009](/docs/adr/0009-product-classification-as-sku-master-data) for
+the full design, including the fail-open/fail-closed asymmetry.
+
+| Env var | Default | Purpose |
+| --- | --- | --- |
+| `LOCATION_LOOKUP_MODE` | `permissive` | `http` calls facility-layout for real; `permissive` (default) is a no-op that always permits the stow — existing tests/CI/deployments unaffected until opted in. |
+| `FACILITY_LAYOUT_BASE_URL` | *(unset)* | Base URL for the `http` mode client, e.g. `http://facility-layout:8080`. |
 
 ## Configuration
 

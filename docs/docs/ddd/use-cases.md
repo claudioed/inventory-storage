@@ -20,6 +20,7 @@ Dependencies are plain struct fields, wired once in
 | 5 | `ConfirmPick` | `POST /reservations/{id}/confirm-pick` | `StockPicked` |
 | 6 | `GetUsable` | `GET /inventory/{sku}/usable` | — (read model) |
 | 7 | `RunCycleCount` | `POST /bins/{binId}/cycle-count` | `CycleCountCompleted`, `DiscrepancyDetected`, `ItemUnlocated` |
+| 8 | `ClassifyProduct` | `PUT /products/{sku}/classification` | `ProductClassified` |
 
 ## 1. ReceiveStock(sku, qty)
 
@@ -81,6 +82,27 @@ saved together, bin first.
 
 **Fails when:** bin unknown (404), missing scan (400), quantity ≤ 0 (422), bin
 full (409).
+
+**Placement check (ADR 0009):** if the SKU has a registered
+`ProductClassification`, and it carries `Hazmat` or `TemperatureSensitive`,
+`StowStock` also calls `LocationClassificationLookup.GetSlotAttributes` — a
+synchronous cross-context read from facility-layout — before persisting.
+
+- A `Hazmat` SKU stowed into a bin whose zone is not hazmat-rated is rejected
+  with `ErrHazmatZoneRequired` (409).
+- A `TemperatureSensitive` SKU stowed into a bin whose zone temperature class
+  does not match is rejected with `ErrTemperatureClassMismatch` (409).
+- **Fail-open for unclassified/unknown bins:** `Known=false` (facility-layout
+  has no record of that location, e.g. a 404) permits the stow.
+- **Fail-closed only for classified, rule-relevant SKUs:** a transport/5xx
+  error from the lookup surfaces as `ErrLocationClassificationUnavailable`
+  (409) — but only when the SKU being stowed carries `Hazmat` or
+  `TemperatureSensitive`. An unclassified SKU, or one with neither tag, is
+  never blocked by lookup unavailability.
+- **Nil-safe by construction:** `Classifications`/`LocationLookup` are
+  optional struct fields. A `StowStock` built without them (every
+  pre-existing test in this package, and the default `permissive` deploy
+  mode) behaves exactly as before this feature existed.
 
 ## 3. ReserveStock(sku, qty, demandRef)
 
@@ -179,6 +201,28 @@ Two deliberate choices are visible here:
 
 Already-`UNLOCATED` and `REMOVED` units are excluded from `systemQty` — you
 cannot lose the same stock twice.
+
+## 8. ClassifyProduct(sku, tags, temperatureClass)
+
+Registers or replaces a SKU's `ProductClassification` — SKU-level master
+data this service owns as source of truth (ADR 0009).
+
+**Collaborators:** `ProductClassificationRepo`, `EventPublisher`, `Clock`.
+
+**Idempotent by SKU:** classifying an already-classified SKU replaces its
+prior classification rather than erroring — re-classification (e.g. an item
+newly designated hazmat) is a legitimate operational action, the same
+"replace, don't error" pattern `RegisterStation` uses in
+`fulfillment-execution`.
+
+**Fails when:** no handling tags supplied (400 `ErrNoHandlingTags`), an
+unknown tag (400 `ErrUnknownHandlingTag`), a duplicate tag (400
+`ErrDuplicateHandlingTag`), `TemperatureSensitive` without a valid
+`TemperatureClass` (400 `ErrTemperatureClassRequired` /
+`ErrUnknownTemperatureClass`), or a `TemperatureClass` supplied without
+`TemperatureSensitive` (400 `ErrTemperatureClassNotApplicable`).
+
+`StowStock` (#2 above) is the consumer of this master data at stow time.
 
 ## Cross-cutting patterns
 

@@ -9,4 +9,25 @@ var (
 	ErrBinNotFound         = errors.New("bin not found")
 	ErrReservationNotFound = errors.New("reservation not found")
 	ErrInsufficientUsable  = errors.New("requested quantity exceeds usable inventory")
+
+	// ErrProductClassificationNotFound is returned when a GetProductClassification
+	// (or similar) lookup finds no registered classification for the SKU.
+	ErrProductClassificationNotFound = errors.New("product classification not found")
+
+	// ErrHazmatZoneRequired is returned by StowStock when a Hazmat SKU is
+	// stowed into a bin whose zone is not hazmat-rated, per facility-layout's
+	// location-classification lookup.
+	ErrHazmatZoneRequired = errors.New("hazmat sku requires a hazmat-rated zone")
+
+	// ErrTemperatureClassMismatch is returned by StowStock when a
+	// TemperatureSensitive SKU is stowed into a bin whose zone temperature
+	// class does not match the SKU's required temperature class.
+	ErrTemperatureClassMismatch = errors.New("bin temperature class does not match the sku's required temperature class")
+
+	// ErrLocationClassificationUnavailable is returned by StowStock when the
+	// synchronous facility-layout lookup fails (transport/5xx) for a SKU
+	// that carries Hazmat or TemperatureSensitive tags. Unclassified SKUs
+	// are never blocked by lookup unavailability — see ADR 0009's
+	// fail-open/fail-closed asymmetry.
+	ErrLocationClassificationUnavailable = errors.New("location classification lookup unavailable")
 )

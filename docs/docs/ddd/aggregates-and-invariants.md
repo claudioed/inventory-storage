@@ -174,6 +174,35 @@ therefore where boundary tests were added explicitly during mutation testing —
 the `result < 0` boundary is the difference between refusing an impossible
 operation and silently inventing stock.
 
+## ProductClassification
+
+**SKU-level master data, independent of any StockUnit or bin.** Added in
+[ADR 0009](/docs/adr/0009-product-classification-as-sku-master-data): this
+service owns product classification as source of truth and enforces
+placement rules against it at stow time.
+
+| Field | Meaning |
+| --- | --- |
+| `sku` | The classified SKU |
+| `handlingTags` | A set drawn from the closed enum `Hazmat`/`Fragile`/`TemperatureSensitive`/`Oversized`/`HighValue` |
+| `temperatureClass` | `Ambient`/`Chilled`/`Frozen` — meaningful, and required, only when `handlingTags` contains `TemperatureSensitive` |
+
+### Invariants
+
+| # | Invariant | Enforcement | Failing-path test |
+| --- | --- | --- | --- |
+| P1 | **A classification requires at least one handling tag.** | `New` returns `ErrNoHandlingTags` | `TestNew_TableDriven/no_tags_rejected` |
+| P2 | **HandlingTag is a closed enum.** | `ParseHandlingTag` / `New` return `ErrUnknownHandlingTag` for anything outside the five named tags | `TestParseHandlingTag/unknown`, `TestNew_TableDriven/unknown_tag_rejected` |
+| P3 | **No duplicate tags — HandlingTags is a set, not a list.** | `New` returns `ErrDuplicateHandlingTag` | `TestNew_TableDriven/duplicate_tag_rejected` |
+| P4 | **TemperatureSensitive requires a valid, non-empty TemperatureClass.** | `New` returns `ErrTemperatureClassRequired` (missing) or `ErrUnknownTemperatureClass` (invalid) | `TestNew_TableDriven/temperature_sensitive_without_class_rejected` |
+| P5 | **Absence of TemperatureSensitive means TemperatureClass must be empty.** | `New` returns `ErrTemperatureClassNotApplicable` | `TestNew_TableDriven/temperature_class_without_temperature_sensitive_tag_rejected` |
+
+`ProductClassified(sku, tags, temperatureClass, occurredAt)` is raised on
+every construction/replacement — see
+[Domain Events](./domain-events.md).
+
+*Code:* `internal/domain/product.ProductClassification`
+
 ## The four named invariants
 
 `CLAUDE.md` singles out four as the Definition of Done for the context. Each

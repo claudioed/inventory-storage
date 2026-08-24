@@ -6,7 +6,7 @@ description: The ten past-tense domain events this context raises, which aggrega
 
 # Domain Events
 
-Ten past-tense events, raised by three aggregates. Every event carries an
+Eleven past-tense events, raised by four aggregates. Every event carries an
 `occurredAt` taken from the injected `Clock` port — never wall-clock time at
 publish — so ordering is a domain fact rather than an infrastructure artefact.
 
@@ -36,6 +36,7 @@ table, Kafka) is a composition-root decision.
 | `ItemUnlocated` | StockUnit | A cycle-count shortfall cannot account for stock | `stockUnitId`, `sku`, `binId`, `quantity` |
 | `CycleCountCompleted` | Bin | Any cycle count finishes, clean or not | `binId`, `countedQty`, `systemQty`, `discrepancy` |
 | `DiscrepancyDetected` | Bin | A cycle count finds counted ≠ system | `binId`, `countedQty`, `systemQty` |
+| `ProductClassified` | ProductClassification | `ClassifyProduct` registers or replaces a SKU's classification | `sku`, `handlingTags`, `temperatureClass` |
 
 ## Which events flow where
 
@@ -51,8 +52,9 @@ flowchart LR
   CC --> E8["DiscrepancyDetected"]
   CC --> E9["ItemUnlocated"]
   EXP["timeout"] --> E10["ReservationExpired"]
+  CLS["ClassifyProduct"] --> E11["ProductClassified"]
 
-  E1 & E2 & E3 & E6 & E7 & E8 & E9 & E10 --> LOG["ports.EventPublisher<br/>in-process only"]
+  E1 & E2 & E3 & E6 & E7 & E8 & E9 & E10 & E11 --> LOG["ports.EventPublisher<br/>in-process only"]
   E4 & E5 --> KAF["Kafka<br/>warehouse.inventory.events"]
 
   classDef wired fill:#0f766e,stroke:#134e4a,color:#fff;
@@ -64,10 +66,10 @@ flowchart LR
 **Only `StockReserved` and `ReservationRevoked` cross the service boundary
 today.** The Kafka adapter's `switch` has a `default: return nil` branch that
 silently drops everything else — that is deliberate, not an oversight: those
-two are the published integration contract, and the other eight are local
-concerns. `apis/asyncapi.yaml` documents the full catalog and marks each
-catalog-only message as such, so a downstream team cannot mistake a documented
-event for a wired one.
+two are the published integration contract, and the other nine (including
+`ProductClassified`) are local concerns. `apis/asyncapi.yaml` documents the
+full catalog and marks each catalog-only message as such, so a downstream
+team cannot mistake a documented event for a wired one.
 
 ## One honest gap: nothing sweeps expirations yet
 
