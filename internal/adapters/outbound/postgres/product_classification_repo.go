@@ -28,20 +28,27 @@ func (r *ProductClassificationRepo) Save(ctx context.Context, c *product.Product
 		rawTags = append(rawTags, string(tag))
 	}
 
+	var dotHazardClass *int
+	if c.DOTHazardClass() != product.DOTHazardClassUnspecified {
+		v := int(c.DOTHazardClass())
+		dotHazardClass = &v
+	}
+
 	_, err := r.pool.Exec(ctx, `
-		INSERT INTO product_classifications (sku, handling_tags, temperature_class)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (sku) DO UPDATE SET handling_tags = EXCLUDED.handling_tags, temperature_class = EXCLUDED.temperature_class
-	`, c.SKU().String(), rawTags, string(c.TemperatureClass()))
+		INSERT INTO product_classifications (sku, handling_tags, temperature_class, dot_hazard_class)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (sku) DO UPDATE SET handling_tags = EXCLUDED.handling_tags, temperature_class = EXCLUDED.temperature_class, dot_hazard_class = EXCLUDED.dot_hazard_class
+	`, c.SKU().String(), rawTags, string(c.TemperatureClass()), dotHazardClass)
 	return err
 }
 
 func (r *ProductClassificationRepo) FindBySKU(ctx context.Context, sku shared.SKU) (*product.ProductClassification, error) {
 	var rawTags []string
 	var temperatureClass string
+	var dotHazardClass *int
 	err := r.pool.QueryRow(ctx, `
-		SELECT handling_tags, temperature_class FROM product_classifications WHERE sku = $1
-	`, sku.String()).Scan(&rawTags, &temperatureClass)
+		SELECT handling_tags, temperature_class, dot_hazard_class FROM product_classifications WHERE sku = $1
+	`, sku.String()).Scan(&rawTags, &temperatureClass, &dotHazardClass)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -54,5 +61,10 @@ func (r *ProductClassificationRepo) FindBySKU(ctx context.Context, sku shared.SK
 		tags = append(tags, product.HandlingTag(raw))
 	}
 
-	return product.Rehydrate(sku, tags, product.TemperatureClass(temperatureClass)), nil
+	dotClass := product.DOTHazardClassUnspecified
+	if dotHazardClass != nil {
+		dotClass = product.DOTHazardClass(*dotHazardClass)
+	}
+
+	return product.Rehydrate(sku, tags, product.TemperatureClass(temperatureClass), dotClass), nil
 }

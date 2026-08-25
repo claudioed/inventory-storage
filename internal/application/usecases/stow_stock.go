@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/claudioed/inventory-storage/internal/application/ports"
+	"github.com/claudioed/inventory-storage/internal/domain/product"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 	"github.com/claudioed/inventory-storage/internal/domain/stock"
 )
@@ -20,11 +21,18 @@ import (
 //   - a TemperatureSensitive SKU may only be stowed into a bin whose zone
 //     temperature class matches the SKU's required TemperatureClass.
 //
+// AFTER those checks pass, and only when the Classifications repo is
+// wired, StowStock additionally enforces same-bin DOT hazard-class
+// segregation (ADR 0010): if the incoming SKU's classification carries a
+// DOTHazardClass, every OTHER SKU already occupying the target bin is
+// checked via product.Incompatible, purely from this service's own
+// StockRepo/ProductClassificationRepo — no cross-context call.
+//
 // Both Classifications and LocationLookup are nil-safe: a StowStock built
 // without them (as every pre-existing test in this package does) behaves
-// exactly as before — permissive, no placement check at all. This is the
-// same "additive, does not alter existing behaviour" discipline documented
-// in the Kafka/EVENT_PUBLISHER pattern.
+// exactly as before — permissive, no placement or segregation check at
+// all. This is the same "additive, does not alter existing behaviour"
+// discipline documented in the Kafka/EVENT_PUBLISHER pattern.
 type StowStock struct {
 	Stock           ports.StockRepo
 	Locations       ports.LocationRepo
@@ -44,6 +52,9 @@ func (uc *StowStock) Execute(ctx context.Context, sku shared.SKU, qty shared.Qua
 	}
 
 	if err := uc.checkPlacement(ctx, sku, binID); err != nil {
+		return nil, err
+	}
+	if err := uc.checkSegregation(ctx, sku, binID); err != nil {
 		return nil, err
 	}
 
@@ -123,6 +134,68 @@ func (uc *StowStock) checkPlacement(ctx context.Context, sku shared.SKU, binID s
 	}
 	if requiresTemperatureClass && attrs.TemperatureClass != classification.TemperatureClass() {
 		return ErrTemperatureClassMismatch
+	}
+
+	return nil
+}
+
+// checkSegregation enforces same-bin DOT hazard-class segregation (ADR
+// 0010), AFTER the hazmat-zone/temperature-class checks above have
+// passed. It is local to this service: bin occupancy (ports.StockRepo)
+// and classification lookup (ports.ProductClassificationRepo) are both
+// already-owned repos here, so no cross-context call is needed.
+//
+// It only runs when the SKU being stowed has a registered classification
+// with a non-zero DOTHazardClass — an unclassified SKU, or one classified
+// without a DOT class, is never blocked here (fail-open, consistent with
+// product.Incompatible's own fail-open zero-value behaviour). For every
+// OTHER StockUnit already occupying binID, this looks up that occupant
+// SKU's classification and rejects the stow if product.Incompatible
+// reports the incoming and an occupant's DOTHazardClass as incompatible.
+// An occupant with no classification, or a classification with no DOT
+// class recorded, never blocks the stow either.
+func (uc *StowStock) checkSegregation(ctx context.Context, sku shared.SKU, binID shared.BinId) error {
+	if uc.Classifications == nil {
+		return nil
+	}
+
+	incoming, err := uc.Classifications.FindBySKU(ctx, sku)
+	if err != nil {
+		return err
+	}
+	if incoming == nil || incoming.DOTHazardClass() == product.DOTHazardClassUnspecified {
+		return nil
+	}
+
+	occupants, err := uc.Stock.FindByBin(ctx, binID)
+	if err != nil {
+		return err
+	}
+
+	seen := make(map[shared.SKU]struct{}, len(occupants))
+	for _, occupant := range occupants {
+		occupantSKU := occupant.SKU()
+		if occupantSKU == sku {
+			// The same SKU already in this bin is never "another" SKU to
+			// segregate against.
+			continue
+		}
+		if _, already := seen[occupantSKU]; already {
+			continue
+		}
+		seen[occupantSKU] = struct{}{}
+
+		occupantClassification, err := uc.Classifications.FindBySKU(ctx, occupantSKU)
+		if err != nil {
+			return err
+		}
+		if occupantClassification == nil {
+			continue
+		}
+
+		if product.Incompatible(incoming.DOTHazardClass(), occupantClassification.DOTHazardClass()) {
+			return ErrHazmatClassIncompatible
+		}
 	}
 
 	return nil

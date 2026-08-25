@@ -39,6 +39,14 @@ var (
 	// ErrDuplicateHandlingTag is returned when the same tag appears more
 	// than once in the input list — HandlingTags is a set, not a list.
 	ErrDuplicateHandlingTag = errors.New("duplicate handling tag")
+	// ErrInvalidDOTHazardClass is returned when a DOTHazardClass value is
+	// outside the valid 1-9 range.
+	ErrInvalidDOTHazardClass = errors.New("dot hazard class must be between 1 and 9")
+	// ErrDOTHazardClassNotApplicable is returned when a DOTHazardClass is
+	// supplied but HandlingTags does not contain Hazmat — the value would
+	// be meaningless and is rejected rather than ignored, mirroring
+	// ErrTemperatureClassNotApplicable's shape exactly.
+	ErrDOTHazardClassNotApplicable = errors.New("dot hazard class is only meaningful when the hazmat tag is present")
 )
 
 // HandlingTag is one member of the closed set of ways a SKU may require
@@ -88,22 +96,60 @@ func ParseTemperatureClass(value string) (TemperatureClass, error) {
 	}
 }
 
+// DOTHazardClass is a US DOT hazard class (49 CFR §172.101's Hazardous
+// Materials Table), restricted here to the nine top-level classes (1-9).
+// Zero is the unspecified/zero-value — a Hazmat SKU may be registered
+// without a DOTHazardClass at all, for backward compatibility with SKUs
+// classified before this field existed (see ADR 0010). This is
+// deliberately NOT a closed Go enum of named constants the way HandlingTag
+// and TemperatureClass are: the real regulation's classes are just the
+// integers 1-9, and encoding them as an int with a range-validating parser
+// is more honest than inventing nine placeholder identifiers no one in
+// this domain actually names.
+type DOTHazardClass int
+
+// DOTHazardClassUnspecified is the zero value: no DOT hazard class has
+// been recorded for this classification. It is valid even when Hazmat is
+// set — DOTHazardClass is optional, not required, by design (ADR 0010).
+const DOTHazardClassUnspecified DOTHazardClass = 0
+
+// ParseDOTHazardClass validates an int against the valid DOT hazard class
+// range (1-9). Note that 0 is NOT accepted here — callers that want to
+// represent "unspecified" use DOTHazardClassUnspecified (the zero value)
+// directly rather than parsing it, exactly as TemperatureClass's "" empty
+// string is never passed through ParseTemperatureClass.
+func ParseDOTHazardClass(value int) (DOTHazardClass, error) {
+	if value < 1 || value > 9 {
+		return DOTHazardClassUnspecified, ErrInvalidDOTHazardClass
+	}
+	return DOTHazardClass(value), nil
+}
+
 // ProductClassification is the aggregate root for a SKU's handling
 // classification — master data, independent of any StockUnit or bin.
 //
-// Invariant: TemperatureClass is required and non-empty if and only if
-// HandlingTags contains TemperatureSensitive. Absence of the
-// TemperatureSensitive tag means TemperatureClass must be empty.
+// Invariants:
+//   - TemperatureClass is required and non-empty if and only if
+//     HandlingTags contains TemperatureSensitive. Absence of the
+//     TemperatureSensitive tag means TemperatureClass must be empty.
+//   - DOTHazardClass, when non-zero (DOTHazardClassUnspecified), is only
+//     valid if HandlingTags contains Hazmat. Unlike TemperatureClass,
+//     DOTHazardClass is never REQUIRED by the Hazmat tag — it remains
+//     optional even on a Hazmat classification, so SKUs classified as
+//     Hazmat before this field existed continue to validate unchanged
+//     (see ADR 0010).
 type ProductClassification struct {
 	sku              shared.SKU
 	handlingTags     map[HandlingTag]struct{}
 	temperatureClass TemperatureClass
+	dotHazardClass   DOTHazardClass
 }
 
 // New constructs a ProductClassification for a SKU, validating the closed
 // HandlingTag enum, rejecting duplicates, and enforcing the
-// TemperatureSensitive/TemperatureClass invariant.
-func New(sku shared.SKU, tags []HandlingTag, temperatureClass TemperatureClass) (*ProductClassification, error) {
+// TemperatureSensitive/TemperatureClass and Hazmat/DOTHazardClass
+// invariants.
+func New(sku shared.SKU, tags []HandlingTag, temperatureClass TemperatureClass, dotHazardClass DOTHazardClass) (*ProductClassification, error) {
 	if sku == "" {
 		return nil, shared.ErrEmptySKU
 	}
@@ -134,21 +180,32 @@ func New(sku shared.SKU, tags []HandlingTag, temperatureClass TemperatureClass) 
 		return nil, ErrTemperatureClassNotApplicable
 	}
 
+	_, hazmat := set[Hazmat]
+	if dotHazardClass != DOTHazardClassUnspecified {
+		if !hazmat {
+			return nil, ErrDOTHazardClassNotApplicable
+		}
+		if _, err := ParseDOTHazardClass(int(dotHazardClass)); err != nil {
+			return nil, err
+		}
+	}
+
 	return &ProductClassification{
 		sku:              sku,
 		handlingTags:     set,
 		temperatureClass: temperatureClass,
+		dotHazardClass:   dotHazardClass,
 	}, nil
 }
 
 // Rehydrate reconstructs a ProductClassification from persisted state
 // without re-running construction invariants (used by repositories).
-func Rehydrate(sku shared.SKU, tags []HandlingTag, temperatureClass TemperatureClass) *ProductClassification {
+func Rehydrate(sku shared.SKU, tags []HandlingTag, temperatureClass TemperatureClass, dotHazardClass DOTHazardClass) *ProductClassification {
 	set := make(map[HandlingTag]struct{}, len(tags))
 	for _, tag := range tags {
 		set[tag] = struct{}{}
 	}
-	return &ProductClassification{sku: sku, handlingTags: set, temperatureClass: temperatureClass}
+	return &ProductClassification{sku: sku, handlingTags: set, temperatureClass: temperatureClass, dotHazardClass: dotHazardClass}
 }
 
 // SKU returns the classified SKU.
@@ -157,6 +214,11 @@ func (c *ProductClassification) SKU() shared.SKU { return c.sku }
 // TemperatureClass returns the required temperature band, or "" if the SKU
 // is not TemperatureSensitive.
 func (c *ProductClassification) TemperatureClass() TemperatureClass { return c.temperatureClass }
+
+// DOTHazardClass returns the registered DOT hazard class, or
+// DOTHazardClassUnspecified (zero) if none was recorded — including for
+// every Hazmat SKU classified before this field existed.
+func (c *ProductClassification) DOTHazardClass() DOTHazardClass { return c.dotHazardClass }
 
 // HandlingTags returns the classification's tags as a stable-ordered slice
 // (enum declaration order), so callers get deterministic output without
@@ -206,6 +268,7 @@ type ProductClassified struct {
 	SKU              shared.SKU
 	HandlingTags     []HandlingTag
 	TemperatureClass TemperatureClass
+	DOTHazardClass   DOTHazardClass
 	At               time.Time
 }
 
@@ -221,6 +284,7 @@ func NewProductClassified(c *ProductClassification, occurredAt time.Time) Produc
 		SKU:              c.SKU(),
 		HandlingTags:     c.HandlingTags(),
 		TemperatureClass: c.TemperatureClass(),
+		DOTHazardClass:   c.DOTHazardClass(),
 		At:               occurredAt,
 	}
 }

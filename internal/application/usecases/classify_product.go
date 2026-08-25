@@ -20,9 +20,12 @@ type ClassifyProduct struct {
 }
 
 // Execute validates and persists a ProductClassification for sku, and
-// publishes ProductClassified.
-func (uc *ClassifyProduct) Execute(ctx context.Context, sku shared.SKU, tags []product.HandlingTag, temperatureClass product.TemperatureClass) (*product.ProductClassification, error) {
-	c, err := product.New(sku, tags, temperatureClass)
+// publishes ProductClassified. dotHazardClass is optional (pass
+// product.DOTHazardClassUnspecified when none applies); the aggregate
+// constructor enforces that a non-zero value is only valid alongside the
+// Hazmat tag (ADR 0010) — this use case does not duplicate that check.
+func (uc *ClassifyProduct) Execute(ctx context.Context, sku shared.SKU, tags []product.HandlingTag, temperatureClass product.TemperatureClass, dotHazardClass product.DOTHazardClass) (*product.ProductClassification, error) {
+	c, err := product.New(sku, tags, temperatureClass, dotHazardClass)
 	if err != nil {
 		return nil, err
 	}

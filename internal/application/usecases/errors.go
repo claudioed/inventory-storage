@@ -30,4 +30,11 @@ var (
 	// are never blocked by lookup unavailability — see ADR 0009's
 	// fail-open/fail-closed asymmetry.
 	ErrLocationClassificationUnavailable = errors.New("location classification lookup unavailable")
+
+	// ErrHazmatClassIncompatible is returned by StowStock when the SKU
+	// being stowed carries a DOT hazard class that is incompatible (per
+	// product.Incompatible, the derived 49 CFR §177.848-grounded matrix)
+	// with the DOT hazard class of another SKU already occupying the
+	// target bin. This is a same-bin-only, local check — see ADR 0010.
+	ErrHazmatClassIncompatible = errors.New("dot hazard class incompatible with another sku already stowed in this bin")
 )

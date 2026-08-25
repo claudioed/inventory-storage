@@ -27,7 +27,7 @@ func TestPostgres_ProductClassificationRoundTrip(t *testing.T) {
 	repo := postgres.NewProductClassificationRepo(pool)
 	sku, _ := shared.NewSKU("IT-PRODUCT-SKU")
 
-	c, err := product.New(sku, []product.HandlingTag{product.Hazmat, product.TemperatureSensitive}, product.Frozen)
+	c, err := product.New(sku, []product.HandlingTag{product.Hazmat, product.TemperatureSensitive}, product.Frozen, 3)
 	if err != nil {
 		t.Fatalf("unexpected error building classification: %v", err)
 	}
@@ -49,9 +49,12 @@ func TestPostgres_ProductClassificationRoundTrip(t *testing.T) {
 	if found.TemperatureClass() != product.Frozen {
 		t.Fatalf("expected TemperatureClass=Frozen, got %v", found.TemperatureClass())
 	}
+	if found.DOTHazardClass() != 3 {
+		t.Fatalf("expected DOTHazardClass=3, got %v", found.DOTHazardClass())
+	}
 
 	// A second Save (re-classification) replaces the row via upsert.
-	c2, err := product.New(sku, []product.HandlingTag{product.Fragile}, "")
+	c2, err := product.New(sku, []product.HandlingTag{product.Fragile}, "", 0)
 	if err != nil {
 		t.Fatalf("unexpected error building second classification: %v", err)
 	}
@@ -64,6 +67,9 @@ func TestPostgres_ProductClassificationRoundTrip(t *testing.T) {
 	}
 	if !refetched.HasTag(product.Fragile) || refetched.HasTag(product.Hazmat) {
 		t.Fatalf("expected reclassification to replace tags, got %v", refetched.HandlingTags())
+	}
+	if refetched.DOTHazardClass() != product.DOTHazardClassUnspecified {
+		t.Fatalf("expected reclassification to clear DOTHazardClass, got %v", refetched.DOTHazardClass())
 	}
 }
 
