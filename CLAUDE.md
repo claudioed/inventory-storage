@@ -50,6 +50,14 @@ migrations/                  golang-migrate SQL files
   a reservation must be releasable and re-allocatable against a different holding.
 - **Cycle count** — verify a bin's contents; reconcile discrepancies; may flag
   Unlocated.
+- **ProductClassification** — SKU-level master data (independent of any bin):
+  a closed set of `HandlingTag`s (`Hazmat`, `Fragile`, `TemperatureSensitive`,
+  `Oversized`, `HighValue`) plus a `TemperatureClass` (`Ambient`/`Chilled`/
+  `Frozen`), required only when `TemperatureSensitive` is set. This service
+  is the source of truth. Unclassified SKUs carry no constraints (fail-open).
+- **HandlingTag** — one of the five closed classification values above. Not
+  an open tag set like `facility-layout`'s `LocationType` — these carry real
+  regulatory/physical meaning, so the enum is deliberately closed.
 
 ## Aggregates & invariants (enforce in domain, unit-tested)
 
@@ -58,23 +66,35 @@ migrations/                  golang-migrate SQL files
 - **Bin/Location**: sum(stock qty in bin) <= capacity; a full bin rejects stow.
 - **Reservation**: reserved qty <= usable qty at reserve time; expires after
   timeout; revoke() returns quantity to usable; cannot double-consume.
+- **ProductClassification**: `TemperatureSensitive` requires a non-empty,
+  valid `TemperatureClass`; absence of `TemperatureSensitive` means
+  `TemperatureClass` must be empty. `StowStock` enforces placement rules for
+  classified SKUs by reading the target bin's zone attributes from
+  `facility-layout` (Hazmat SKU requires a hazmat-rated zone;
+  `TemperatureSensitive` SKU requires a matching zone `TemperatureClass`) —
+  see ADR-0009. **Fail-open** for unclassified SKUs and unknown/unmodeled
+  bins (lookup returns `Known=false`); **fail-closed** only when a
+  classified SKU's lookup genuinely fails (`ErrLocationClassificationUnavailable`).
 - Read models (usable-by-SKU, bin occupancy) are PROJECTIONS from events.
 
 ## Domain events (past tense)
 
 StockReceived, ItemStowed, LocationRecorded, StockReserved, ReservationExpired,
 ReservationRevoked, StockPicked, ItemUnlocated, CycleCountCompleted,
-DiscrepancyDetected.
+DiscrepancyDetected, ProductClassified.
 
 ## Use cases (application layer)
 
 1. ReceiveStock(sku, qty) -> staged stock awaiting stow
-2. StowStock(sku, qty, binId) -> validates item+location scan, respects capacity
+2. StowStock(sku, qty, binId) -> validates item+location scan, respects capacity,
+   enforces hazmat/temperature placement rules for classified SKUs
 3. ReserveStock(sku, qty, demandRef) -> revocable Reservation against usable
 4. RevokeReservation(reservationId) -> returns qty to usable
 5. ConfirmPick(reservationId) -> consumes reservation, StockPicked
 6. GetUsable(sku) -> usable-inventory read model
 7. RunCycleCount(binId, countedQty) -> reconcile, may raise Discrepancy/Unlocated
+8. ClassifyProduct(sku, handlingTags, temperatureClass?) -> registers/replaces
+   a SKU's ProductClassification (this service is the source of truth)
 
 ## REST API (inbound adapter)
 
@@ -85,6 +105,8 @@ DiscrepancyDetected.
 - POST /reservations/{id}/confirm-pick       -> ConfirmPick
 - GET  /inventory/{sku}/usable               -> GetUsable
 - POST /bins/{binId}/cycle-count             -> RunCycleCount
+- PUT  /products/{sku}/classification        -> ClassifyProduct
+- GET  /products/{sku}/classification        -> current ProductClassification
 - GET  /healthz
 
 JSON DTOs live in the http adapter; never leak domain structs.
