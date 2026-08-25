@@ -58,6 +58,14 @@ migrations/                  golang-migrate SQL files
 - **HandlingTag** — one of the five closed classification values above. Not
   an open tag set like `facility-layout`'s `LocationType` — these carry real
   regulatory/physical meaning, so the enum is deliberately closed.
+- **DOTHazardClass** — an optional US DOT hazard class (1-9, grounded in
+  49 CFR §177.848), meaningful only when `HandlingTag.Hazmat` is set but
+  still OPTIONAL even then (nullable, for backward compat with already-
+  classified hazmat SKUs that predate this field). Drives the same-bin
+  segregation check below. See ADR-0010 for the derived 9×9 class-level
+  incompatibility matrix and its 4 documented simplification rules
+  (division→class collapse, X-and-O both treated as incompatible for a
+  single bin, Class 1 maximally restrictive, Class 9 broadly compatible).
 
 ## Aggregates & invariants (enforce in domain, unit-tested)
 
@@ -68,13 +76,18 @@ migrations/                  golang-migrate SQL files
   timeout; revoke() returns quantity to usable; cannot double-consume.
 - **ProductClassification**: `TemperatureSensitive` requires a non-empty,
   valid `TemperatureClass`; absence of `TemperatureSensitive` means
-  `TemperatureClass` must be empty. `StowStock` enforces placement rules for
-  classified SKUs by reading the target bin's zone attributes from
-  `facility-layout` (Hazmat SKU requires a hazmat-rated zone;
-  `TemperatureSensitive` SKU requires a matching zone `TemperatureClass`) —
-  see ADR-0009. **Fail-open** for unclassified SKUs and unknown/unmodeled
-  bins (lookup returns `Known=false`); **fail-closed** only when a
-  classified SKU's lookup genuinely fails (`ErrLocationClassificationUnavailable`).
+  `TemperatureClass` must be empty. `DOTHazardClass` (1-9) is optional even
+  when `Hazmat` is set. `StowStock` enforces placement rules for classified
+  SKUs by reading the target bin's zone attributes from `facility-layout`
+  (Hazmat SKU requires a hazmat-rated zone; `TemperatureSensitive` SKU
+  requires a matching zone `TemperatureClass`) — see ADR-0009. It ALSO
+  enforces same-bin DOT segregation (ADR-0010): a hazmat SKU with a
+  `DOTHazardClass` is rejected if the target bin already holds a SKU whose
+  class is `Incompatible` per the 9×9 matrix — this check is purely LOCAL
+  (StockRepo + ProductClassificationRepo, no cross-context call). **Fail-open**
+  for unclassified SKUs, unknown/unmodeled bins, and unclassified occupants;
+  **fail-closed** only when a classified SKU's zone lookup genuinely fails
+  (`ErrLocationClassificationUnavailable`).
 - Read models (usable-by-SKU, bin occupancy) are PROJECTIONS from events.
 
 ## Domain events (past tense)
@@ -87,14 +100,16 @@ DiscrepancyDetected, ProductClassified.
 
 1. ReceiveStock(sku, qty) -> staged stock awaiting stow
 2. StowStock(sku, qty, binId) -> validates item+location scan, respects capacity,
-   enforces hazmat/temperature placement rules for classified SKUs
+   enforces hazmat/temperature placement rules AND same-bin DOT segregation
+   for classified SKUs
 3. ReserveStock(sku, qty, demandRef) -> revocable Reservation against usable
 4. RevokeReservation(reservationId) -> returns qty to usable
 5. ConfirmPick(reservationId) -> consumes reservation, StockPicked
 6. GetUsable(sku) -> usable-inventory read model
 7. RunCycleCount(binId, countedQty) -> reconcile, may raise Discrepancy/Unlocated
-8. ClassifyProduct(sku, handlingTags, temperatureClass?) -> registers/replaces
-   a SKU's ProductClassification (this service is the source of truth)
+8. ClassifyProduct(sku, handlingTags, temperatureClass?, dotHazardClass?) ->
+   registers/replaces a SKU's ProductClassification (this service is the
+   source of truth)
 
 ## REST API (inbound adapter)
 
