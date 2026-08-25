@@ -104,6 +104,18 @@ synchronous cross-context read from facility-layout — before persisting.
   pre-existing test in this package, and the default `permissive` deploy
   mode) behaves exactly as before this feature existed.
 
+**Same-bin DOT segregation check (ADR 0010):** AFTER the placement check
+above passes, and only when `Classifications` is wired, `StowStock` checks
+whether the SKU being stowed has a registered classification with a
+non-zero `DOTHazardClass`. If so, it looks up every OTHER SKU already
+occupying the target bin (via `StockRepo.FindByBin`) and their
+classifications (via `ProductClassificationRepo.FindBySKU`) — both already
+this service's own repos, no cross-context call — and rejects with
+`ErrHazmatClassIncompatible` (409) if `product.Incompatible` reports any
+occupant's class as incompatible with the incoming SKU's class. An
+unclassified occupant, or one with no `DOTHazardClass` recorded, never
+blocks the stow (fail-open).
+
 ## 3. ReserveStock(sku, qty, demandRef)
 
 Creates a revocable `Reservation` against **usable** inventory, drawing
@@ -202,10 +214,11 @@ Two deliberate choices are visible here:
 Already-`UNLOCATED` and `REMOVED` units are excluded from `systemQty` — you
 cannot lose the same stock twice.
 
-## 8. ClassifyProduct(sku, tags, temperatureClass)
+## 8. ClassifyProduct(sku, tags, temperatureClass, dotHazardClass)
 
 Registers or replaces a SKU's `ProductClassification` — SKU-level master
-data this service owns as source of truth (ADR 0009).
+data this service owns as source of truth (ADR 0009), extended in ADR 0010
+with an optional DOT hazard class.
 
 **Collaborators:** `ProductClassificationRepo`, `EventPublisher`, `Clock`.
 
@@ -219,8 +232,12 @@ newly designated hazmat) is a legitimate operational action, the same
 unknown tag (400 `ErrUnknownHandlingTag`), a duplicate tag (400
 `ErrDuplicateHandlingTag`), `TemperatureSensitive` without a valid
 `TemperatureClass` (400 `ErrTemperatureClassRequired` /
-`ErrUnknownTemperatureClass`), or a `TemperatureClass` supplied without
-`TemperatureSensitive` (400 `ErrTemperatureClassNotApplicable`).
+`ErrUnknownTemperatureClass`), a `TemperatureClass` supplied without
+`TemperatureSensitive` (400 `ErrTemperatureClassNotApplicable`), a
+`DOTHazardClass` outside 1-9 (400 `ErrInvalidDOTHazardClass`), or a
+`DOTHazardClass` supplied without `Hazmat` (400
+`ErrDOTHazardClassNotApplicable`). All validation is delegated to the
+aggregate constructor `product.New` — this use case does not duplicate it.
 
 `StowStock` (#2 above) is the consumer of this master data at stow time.
 

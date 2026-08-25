@@ -14,6 +14,7 @@ func TestClassifyProduct_TableDriven(t *testing.T) {
 		sku     string
 		tags    []product.HandlingTag
 		temp    product.TemperatureClass
+		dot     product.DOTHazardClass
 		wantErr error
 	}{
 		{
@@ -39,6 +40,19 @@ func TestClassifyProduct_TableDriven(t *testing.T) {
 			tags:    []product.HandlingTag{product.TemperatureSensitive},
 			wantErr: product.ErrTemperatureClassRequired,
 		},
+		{
+			name: "hazmat with dot hazard class succeeds",
+			sku:  "SKU-5",
+			tags: []product.HandlingTag{product.Hazmat},
+			dot:  3,
+		},
+		{
+			name:    "dot hazard class without hazmat rejected",
+			sku:     "SKU-6",
+			tags:    []product.HandlingTag{product.Fragile},
+			dot:     3,
+			wantErr: product.ErrDOTHazardClassNotApplicable,
+		},
 	}
 
 	for _, tt := range tests {
@@ -46,7 +60,7 @@ func TestClassifyProduct_TableDriven(t *testing.T) {
 			e := newEnv()
 			uc := &usecases.ClassifyProduct{Classifications: e.Classifications, Events: e.Events, Clock: e.Clock}
 
-			c, err := uc.Execute(context.Background(), mustSKU(t, tt.sku), tt.tags, tt.temp)
+			c, err := uc.Execute(context.Background(), mustSKU(t, tt.sku), tt.tags, tt.temp, tt.dot)
 			if err != tt.wantErr {
 				t.Fatalf("expected error %v, got %v", tt.wantErr, err)
 			}
@@ -59,6 +73,9 @@ func TestClassifyProduct_TableDriven(t *testing.T) {
 			if c == nil {
 				t.Fatalf("expected a classification, got nil")
 			}
+			if c.DOTHazardClass() != tt.dot {
+				t.Fatalf("expected DOTHazardClass=%v, got %v", tt.dot, c.DOTHazardClass())
+			}
 
 			stored, err := e.Classifications.FindBySKU(context.Background(), mustSKU(t, tt.sku))
 			if err != nil {
@@ -66,6 +83,9 @@ func TestClassifyProduct_TableDriven(t *testing.T) {
 			}
 			if stored == nil {
 				t.Fatalf("expected classification to be persisted")
+			}
+			if stored.DOTHazardClass() != tt.dot {
+				t.Fatalf("expected stored DOTHazardClass=%v, got %v", tt.dot, stored.DOTHazardClass())
 			}
 		})
 	}
@@ -75,7 +95,7 @@ func TestClassifyProduct_PublishesProductClassified(t *testing.T) {
 	e := newEnv()
 	uc := &usecases.ClassifyProduct{Classifications: e.Classifications, Events: e.Events, Clock: e.Clock}
 
-	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), []product.HandlingTag{product.Hazmat}, "")
+	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), []product.HandlingTag{product.Hazmat}, "", 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -98,10 +118,10 @@ func TestClassifyProduct_Reclassify_Replaces(t *testing.T) {
 	uc := &usecases.ClassifyProduct{Classifications: e.Classifications, Events: e.Events, Clock: e.Clock}
 
 	sku := mustSKU(t, "SKU-1")
-	if _, err := uc.Execute(context.Background(), sku, []product.HandlingTag{product.Fragile}, ""); err != nil {
+	if _, err := uc.Execute(context.Background(), sku, []product.HandlingTag{product.Fragile}, "", 0); err != nil {
 		t.Fatalf("unexpected error on first classify: %v", err)
 	}
-	if _, err := uc.Execute(context.Background(), sku, []product.HandlingTag{product.Hazmat}, ""); err != nil {
+	if _, err := uc.Execute(context.Background(), sku, []product.HandlingTag{product.Hazmat}, "", 0); err != nil {
 		t.Fatalf("unexpected error on reclassify: %v", err)
 	}
 
@@ -119,7 +139,7 @@ func TestClassifyProduct_SaveFails_PropagatesError(t *testing.T) {
 	repo := &failingProductClassificationRepo{delegate: e.Classifications, failSave: true}
 	uc := &usecases.ClassifyProduct{Classifications: repo, Events: e.Events, Clock: e.Clock}
 
-	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), []product.HandlingTag{product.Hazmat}, "")
+	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), []product.HandlingTag{product.Hazmat}, "", 0)
 	if err != errFake {
 		t.Fatalf("expected errFake, got %v", err)
 	}
@@ -129,7 +149,7 @@ func TestClassifyProduct_EventPublishFails_PropagatesError(t *testing.T) {
 	e := newEnv()
 	uc := &usecases.ClassifyProduct{Classifications: e.Classifications, Events: failingEvents{}, Clock: e.Clock}
 
-	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), []product.HandlingTag{product.Hazmat}, "")
+	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), []product.HandlingTag{product.Hazmat}, "", 0)
 	if err != errFake {
 		t.Fatalf("expected errFake, got %v", err)
 	}

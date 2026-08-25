@@ -231,7 +231,9 @@ paths:
             the target bin's zone fails the placement check (not
             hazmat-rated, or a temperature-class mismatch), or the
             facility-layout classification lookup was unavailable for a
-            classified, rule-relevant SKU.
+            classified, rule-relevant SKU, or the SKU carries a DOT hazard
+            class (ADR 0010) that is incompatible with another SKU already
+            occupying the target bin (same-bin DOT segregation).
           content:
             application/problem+json:
               schema:
@@ -268,6 +270,14 @@ paths:
                     title: Location classification lookup unavailable
                     status: 409
                     detail: location classification lookup unavailable
+                    instance: /stock/stow
+                hazmatClassIncompatible:
+                  summary: DOT hazard class incompatible with another SKU already in the bin
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/hazmat-class-incompatible
+                    title: DOT hazard class incompatible with another SKU already stowed in this bin
+                    status: 409
+                    detail: dot hazard class incompatible with another sku already stowed in this bin
                     instance: /stock/stow
         "422":
           description: Quantity present but not a positive number.
@@ -995,13 +1005,29 @@ components:
             TemperatureSensitive; omit/empty otherwise.
           enum: [Ambient, Chilled, Frozen]
           example: Frozen
+        dotHazardClass:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 9
+          nullable: true
+          description: >
+            Optional top-level US DOT hazard class (1-9; explosives
+            sub-divisions/compatibility-groups A-L/S are out of scope —
+            see ADR 0010). Meaningful, and settable, only when
+            handlingTags includes Hazmat — but unlike temperatureClass,
+            never REQUIRED by Hazmat: omit/null for a Hazmat
+            classification with no DOT class on file (e.g. one
+            classified before this field existed).
+          example: 3
 
     ProductClassification:
       type: object
       description: >
         SKU-level master data describing how an item must be handled,
         independent of any StockUnit or bin. This service owns it as
-        source of truth (ADR 0009).
+        source of truth (ADR 0009). dotHazardClass adds a same-bin DOT
+        segregation check enforced at stow time (ADR 0010).
       properties:
         sku:
           type: string
@@ -1017,3 +1043,13 @@ components:
           description: Empty unless handlingTags includes TemperatureSensitive.
           enum: [Ambient, Chilled, Frozen]
           example: Frozen
+        dotHazardClass:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 9
+          nullable: true
+          description: >
+            Omitted/null unless handlingTags includes Hazmat AND a DOT
+            hazard class was explicitly recorded (ADR 0010).
+          example: 3

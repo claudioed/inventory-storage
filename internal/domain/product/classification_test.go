@@ -77,6 +77,7 @@ func TestNew_TableDriven(t *testing.T) {
 		sku     string
 		tags    []HandlingTag
 		temp    TemperatureClass
+		dot     DOTHazardClass
 		wantErr error
 	}{
 		{
@@ -149,12 +150,40 @@ func TestNew_TableDriven(t *testing.T) {
 			temp:    Frozen,
 			wantErr: nil,
 		},
+		{
+			name:    "hazmat with dot hazard class succeeds",
+			sku:     "SKU-1",
+			tags:    []HandlingTag{Hazmat},
+			dot:     3,
+			wantErr: nil,
+		},
+		{
+			name:    "dot hazard class without hazmat tag rejected",
+			sku:     "SKU-1",
+			tags:    []HandlingTag{Fragile},
+			dot:     3,
+			wantErr: ErrDOTHazardClassNotApplicable,
+		},
+		{
+			name:    "dot hazard class out of range rejected",
+			sku:     "SKU-1",
+			tags:    []HandlingTag{Hazmat},
+			dot:     10,
+			wantErr: ErrInvalidDOTHazardClass,
+		},
+		{
+			name:    "dot hazard class zero out of range rejected",
+			sku:     "SKU-1",
+			tags:    []HandlingTag{Fragile},
+			dot:     -1,
+			wantErr: ErrDOTHazardClassNotApplicable,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			sku := shared.SKU(tt.sku)
-			c, err := New(sku, tt.tags, tt.temp)
+			c, err := New(sku, tt.tags, tt.temp, tt.dot)
 			if err != tt.wantErr {
 				t.Fatalf("expected error %v, got %v", tt.wantErr, err)
 			}
@@ -173,12 +202,15 @@ func TestNew_TableDriven(t *testing.T) {
 			if c.TemperatureClass() != tt.temp {
 				t.Fatalf("expected TemperatureClass=%v, got %v", tt.temp, c.TemperatureClass())
 			}
+			if c.DOTHazardClass() != tt.dot {
+				t.Fatalf("expected DOTHazardClass=%v, got %v", tt.dot, c.DOTHazardClass())
+			}
 		})
 	}
 }
 
 func TestProductClassification_HandlingTags_StableOrder(t *testing.T) {
-	c, err := New(mustSKU(t, "SKU-1"), []HandlingTag{HighValue, Hazmat, Oversized}, "")
+	c, err := New(mustSKU(t, "SKU-1"), []HandlingTag{HighValue, Hazmat, Oversized}, "", 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -195,7 +227,7 @@ func TestProductClassification_HandlingTags_StableOrder(t *testing.T) {
 }
 
 func TestProductClassification_HasTag(t *testing.T) {
-	c, err := New(mustSKU(t, "SKU-1"), []HandlingTag{Hazmat}, "")
+	c, err := New(mustSKU(t, "SKU-1"), []HandlingTag{Hazmat}, "", 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -214,7 +246,7 @@ func TestProductClassification_HasTag(t *testing.T) {
 }
 
 func TestProductClassification_IsTemperatureSensitive(t *testing.T) {
-	c, err := New(mustSKU(t, "SKU-1"), []HandlingTag{TemperatureSensitive}, Frozen)
+	c, err := New(mustSKU(t, "SKU-1"), []HandlingTag{TemperatureSensitive}, Frozen, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -228,7 +260,7 @@ func TestProductClassification_IsTemperatureSensitive(t *testing.T) {
 
 func TestRehydrate_ReconstructsWithoutValidation(t *testing.T) {
 	sku := mustSKU(t, "SKU-1")
-	c := Rehydrate(sku, []HandlingTag{Hazmat, TemperatureSensitive}, Chilled)
+	c := Rehydrate(sku, []HandlingTag{Hazmat, TemperatureSensitive}, Chilled, 4)
 	if c.SKU() != sku {
 		t.Fatalf("expected SKU=%v, got %v", sku, c.SKU())
 	}
@@ -238,10 +270,13 @@ func TestRehydrate_ReconstructsWithoutValidation(t *testing.T) {
 	if c.TemperatureClass() != Chilled {
 		t.Fatalf("expected TemperatureClass=Chilled, got %v", c.TemperatureClass())
 	}
+	if c.DOTHazardClass() != 4 {
+		t.Fatalf("expected DOTHazardClass=4, got %v", c.DOTHazardClass())
+	}
 }
 
 func TestNewProductClassified_CarriesFieldsAndOccurredAt(t *testing.T) {
-	c, err := New(mustSKU(t, "SKU-1"), []HandlingTag{Hazmat, TemperatureSensitive}, Frozen)
+	c, err := New(mustSKU(t, "SKU-1"), []HandlingTag{Hazmat, TemperatureSensitive}, Frozen, 3)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -259,6 +294,9 @@ func TestNewProductClassified_CarriesFieldsAndOccurredAt(t *testing.T) {
 	}
 	if event.TemperatureClass != Frozen {
 		t.Fatalf("expected TemperatureClass=Frozen, got %v", event.TemperatureClass)
+	}
+	if event.DOTHazardClass != 3 {
+		t.Fatalf("expected DOTHazardClass=3, got %v", event.DOTHazardClass)
 	}
 	if len(event.HandlingTags) != 2 {
 		t.Fatalf("expected 2 handling tags, got %d (%v)", len(event.HandlingTags), event.HandlingTags)

@@ -279,13 +279,22 @@ func (s *Server) handleClassifyProduct(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	var dotHazardClass product.DOTHazardClass
+	if req.DOTHazardClass != nil {
+		dotHazardClass, err = product.ParseDOTHazardClass(*req.DOTHazardClass)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+	}
+
 	existing, err := s.Classifications.FindBySKU(r.Context(), sku)
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
 
-	c, err := s.ClassifyProduct.Execute(r.Context(), sku, tags, temperatureClass)
+	c, err := s.ClassifyProduct.Execute(r.Context(), sku, tags, temperatureClass, dotHazardClass)
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -357,10 +366,16 @@ func toProductClassificationResponse(c *product.ProductClassification) productCl
 	for _, tag := range tags {
 		handlingTags = append(handlingTags, string(tag))
 	}
+	var dotHazardClass *int
+	if c.DOTHazardClass() != product.DOTHazardClassUnspecified {
+		v := int(c.DOTHazardClass())
+		dotHazardClass = &v
+	}
 	return productClassificationResponse{
 		SKU:              c.SKU().String(),
 		HandlingTags:     handlingTags,
 		TemperatureClass: string(c.TemperatureClass()),
+		DOTHazardClass:   dotHazardClass,
 	}
 }
 

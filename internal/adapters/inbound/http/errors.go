@@ -29,7 +29,9 @@ func statusFor(err error) int {
 		errors.Is(err, product.ErrNoHandlingTags),
 		errors.Is(err, product.ErrTemperatureClassRequired),
 		errors.Is(err, product.ErrTemperatureClassNotApplicable),
-		errors.Is(err, product.ErrDuplicateHandlingTag):
+		errors.Is(err, product.ErrDuplicateHandlingTag),
+		errors.Is(err, product.ErrInvalidDOTHazardClass),
+		errors.Is(err, product.ErrDOTHazardClassNotApplicable):
 		return http.StatusBadRequest
 
 	case errors.Is(err, shared.ErrNegativeQuantity),
@@ -48,7 +50,8 @@ func statusFor(err error) int {
 		errors.Is(err, reservation.ErrNoAllocations),
 		errors.Is(err, usecases.ErrHazmatZoneRequired),
 		errors.Is(err, usecases.ErrTemperatureClassMismatch),
-		errors.Is(err, usecases.ErrLocationClassificationUnavailable):
+		errors.Is(err, usecases.ErrLocationClassificationUnavailable),
+		errors.Is(err, usecases.ErrHazmatClassIncompatible):
 		return http.StatusConflict
 
 	default:
@@ -102,6 +105,10 @@ func problemFor(err error) problemInfo {
 		return problemInfo{"temperature-class-not-applicable", "Temperature class is only meaningful when the temperature-sensitive tag is present"}
 	case errors.Is(err, product.ErrDuplicateHandlingTag):
 		return problemInfo{"duplicate-handling-tag", "Duplicate handling tag"}
+	case errors.Is(err, product.ErrInvalidDOTHazardClass):
+		return problemInfo{"invalid-dot-hazard-class", "DOT hazard class must be between 1 and 9"}
+	case errors.Is(err, product.ErrDOTHazardClassNotApplicable):
+		return problemInfo{"dot-hazard-class-not-applicable", "DOT hazard class is only meaningful when the hazmat tag is present"}
 
 	case errors.Is(err, shared.ErrNegativeQuantity):
 		return problemInfo{"negative-quantity", "Quantity must not be negative"}
@@ -132,6 +139,8 @@ func problemFor(err error) problemInfo {
 		return problemInfo{"temperature-class-mismatch", "Bin temperature class does not match the SKU's required temperature class"}
 	case errors.Is(err, usecases.ErrLocationClassificationUnavailable):
 		return problemInfo{"location-classification-unavailable", "Location classification lookup unavailable"}
+	case errors.Is(err, usecases.ErrHazmatClassIncompatible):
+		return problemInfo{"hazmat-class-incompatible", "DOT hazard class incompatible with another SKU already stowed in this bin"}
 
 	default:
 		return problemInfo{"internal-error", "An unexpected internal error occurred"}

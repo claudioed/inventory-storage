@@ -73,6 +73,7 @@ const sidebars: SidebarsConfig = {
         'adr/0007-godog-bdd-acceptance-tests',
         'adr/0008-mcp-inbound-adapter',
         'adr/0009-product-classification-as-sku-master-data',
+        'adr/0010-dot-hazard-class-and-same-bin-segregation',
       ],
     },
   ],

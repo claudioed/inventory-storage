@@ -31,7 +31,11 @@ SKU-level master data — independent of any `StockUnit` or `Bin` — describing
 how an item must be handled. Carries a **closed** set of `HandlingTag`s
 (`Hazmat`, `Fragile`, `TemperatureSensitive`, `Oversized`, `HighValue`) and,
 only when `TemperatureSensitive` is present, a required `TemperatureClass`
-(`Ambient`/`Chilled`/`Frozen`). This service is the **source of truth** for
+(`Ambient`/`Chilled`/`Frozen`). It may also carry an **optional**
+`DOTHazardClass` (1-9, top-level US DOT hazard class only), meaningful only
+when `Hazmat` is present — but unlike `TemperatureClass`, never *required*
+by `Hazmat`, so SKUs classified as `Hazmat` before this field existed
+continue to validate unchanged. This service is the **source of truth** for
 this classification — WMS-tier master data, not derived from or shared with
 any other bounded context.
 
@@ -43,6 +47,12 @@ facility-layout's own `Zone.TemperatureClass` concept — bounded contexts do
 not share Go types across repository boundaries; each side names and
 validates the concept in its own ubiquitous language. See
 [ADR 0009](/docs/adr/0009-product-classification-as-sku-master-data).
+
+`DOTHazardClass` grounds a real regulation — 49 CFR §177.848 — with four
+documented study-project simplifications (division/zone collapse to
+top-level class, `X`/`O` both block same-bin storage, Class 1 is maximally
+restrictive, Class 9 is broadly compatible). See
+[ADR 0010](/docs/adr/0010-dot-hazard-class-and-same-bin-segregation).
 
 *Code:* `internal/domain/product.ProductClassification`
 
@@ -135,6 +145,7 @@ Anti-Corruption boundary: order semantics do not leak into the inventory model.
 | `Quantity` | A **non-negative** count. Every operation that would drive it negative returns an error rather than clamping — "no negative usable" is enforced at construction *and* on every arithmetic operation. `NewPositiveQuantity` additionally rejects zero, for requests like "reserve nothing." |
 | `HandlingTag` | A closed enum: `Hazmat`, `Fragile`, `TemperatureSensitive`, `Oversized`, `HighValue`. `ParseHandlingTag` rejects anything else (`ErrUnknownHandlingTag`). |
 | `TemperatureClass` | A closed enum: `Ambient`, `Chilled`, `Frozen`. Required and non-empty iff the classification carries `TemperatureSensitive`; empty otherwise. |
+| `DOTHazardClass` | An `int` 1-9 (top-level US DOT hazard class, not a closed enum of named constants). `ParseDOTHazardClass` rejects anything outside 1-9. Meaningful/settable only when `HandlingTags` contains `Hazmat`, but never required by it — zero (`DOTHazardClassUnspecified`) is valid even on a Hazmat classification. See [ADR 0010](/docs/adr/0010-dot-hazard-class-and-same-bin-segregation). |
 
 ## States
 

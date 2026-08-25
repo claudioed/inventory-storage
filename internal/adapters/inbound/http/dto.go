@@ -69,12 +69,20 @@ type cycleCountResponse struct {
 type classifyProductRequest struct {
 	HandlingTags     []string `json:"handlingTags"`
 	TemperatureClass string   `json:"temperatureClass,omitempty"`
+	// DOTHazardClass is optional (a nil pointer means "unspecified"), and
+	// meaningful only when HandlingTags includes "Hazmat" — see ADR 0010.
+	// A pointer distinguishes "field omitted" from "explicitly 0", since
+	// 0 is not a valid DOT hazard class (the valid range is 1-9).
+	DOTHazardClass *int `json:"dotHazardClass,omitempty"`
 }
 
 type productClassificationResponse struct {
 	SKU              string   `json:"sku"`
 	HandlingTags     []string `json:"handlingTags"`
 	TemperatureClass string   `json:"temperatureClass,omitempty"`
+	// DOTHazardClass is omitted from the response entirely when
+	// unspecified, rather than serialized as 0 — 0 is not a valid class.
+	DOTHazardClass *int `json:"dotHazardClass,omitempty"`
 }
 
 // problemDetails is the RFC 7807 (Problem Details for HTTP APIs) response

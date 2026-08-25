@@ -354,6 +354,83 @@ func TestClassifyProduct_Endpoint_UnknownTag_Rejected(t *testing.T) {
 	assertProblemDetails(t, rec, http.StatusBadRequest, "unknown-handling-tag", "/products/SKU-1/classification")
 }
 
+// DOTHazardClass round-trips through the classification endpoint: create
+// with a Hazmat SKU carrying a DOT class, and the response echoes it back.
+func TestClassifyProduct_Endpoint_DOTHazardClass_RoundTrip(t *testing.T) {
+	ts := newTestServer()
+	rec := ts.do(t, http.MethodPut, "/products/SKU-1/classification", map[string]any{
+		"handlingTags":   []string{"Hazmat"},
+		"dotHazardClass": 3,
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		SKU            string   `json:"sku"`
+		HandlingTags   []string `json:"handlingTags"`
+		DOTHazardClass *int     `json:"dotHazardClass"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unexpected error decoding response: %v", err)
+	}
+	if body.DOTHazardClass == nil || *body.DOTHazardClass != 3 {
+		t.Fatalf("expected dotHazardClass=3, got %v", body.DOTHazardClass)
+	}
+
+	getRec := ts.do(t, http.MethodGet, "/products/SKU-1/classification", nil)
+	var getBody struct {
+		DOTHazardClass *int `json:"dotHazardClass"`
+	}
+	_ = json.Unmarshal(getRec.Body.Bytes(), &getBody)
+	if getBody.DOTHazardClass == nil || *getBody.DOTHazardClass != 3 {
+		t.Fatalf("expected GET dotHazardClass=3, got %v", getBody.DOTHazardClass)
+	}
+}
+
+// A Hazmat classification with no dotHazardClass field at all omits it
+// from the response entirely (nil, not 0) — backward compatible with
+// classifications registered before this field existed.
+func TestClassifyProduct_Endpoint_DOTHazardClass_Omitted(t *testing.T) {
+	ts := newTestServer()
+	rec := ts.do(t, http.MethodPut, "/products/SKU-1/classification", map[string]any{
+		"handlingTags": []string{"Hazmat"},
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var raw map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &raw)
+	if _, present := raw["dotHazardClass"]; present {
+		t.Fatalf("expected dotHazardClass to be omitted, got %v", raw["dotHazardClass"])
+	}
+}
+
+// dotHazardClass supplied without the Hazmat tag is rejected 400.
+func TestClassifyProduct_Endpoint_DOTHazardClassWithoutHazmat_Rejected(t *testing.T) {
+	ts := newTestServer()
+	rec := ts.do(t, http.MethodPut, "/products/SKU-1/classification", map[string]any{
+		"handlingTags":   []string{"Fragile"},
+		"dotHazardClass": 3,
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertProblemDetails(t, rec, http.StatusBadRequest, "dot-hazard-class-not-applicable", "/products/SKU-1/classification")
+}
+
+// dotHazardClass out of the valid 1-9 range is rejected 400.
+func TestClassifyProduct_Endpoint_DOTHazardClassOutOfRange_Rejected(t *testing.T) {
+	ts := newTestServer()
+	rec := ts.do(t, http.MethodPut, "/products/SKU-1/classification", map[string]any{
+		"handlingTags":   []string{"Hazmat"},
+		"dotHazardClass": 10,
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertProblemDetails(t, rec, http.StatusBadRequest, "invalid-dot-hazard-class", "/products/SKU-1/classification")
+}
+
 func TestGetProductClassification_Endpoint_Found(t *testing.T) {
 	ts := newTestServer()
 	ts.do(t, http.MethodPut, "/products/SKU-1/classification", map[string]any{
@@ -430,4 +507,55 @@ type stubLookup struct {
 
 func (s *stubLookup) GetSlotAttributes(_ context.Context, _ shared.BinId) (product.SlotAttributes, error) {
 	return product.SlotAttributes{Known: s.known, Hazmat: s.hazmat}, nil
+}
+
+// Same-bin DOT hazard-class segregation (ADR 0010), exercised end-to-end
+// over HTTP: two incompatible-class Hazmat SKUs cannot share a bin.
+func TestStowStock_Endpoint_SegregationRejected(t *testing.T) {
+	stockRepo := memory.NewStockRepo()
+	locationRepo := memory.NewLocationRepo()
+	classificationRepo := memory.NewProductClassificationRepo()
+	publisher := events.NewBufferedPublisher()
+	clock := memory.NewFixedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+
+	s := &inboundhttp.Server{
+		StowStock: &usecases.StowStock{
+			Stock: stockRepo, Locations: locationRepo, Events: publisher, Clock: clock,
+			Classifications: classificationRepo,
+		},
+		ClassifyProduct: &usecases.ClassifyProduct{Classifications: classificationRepo, Events: publisher, Clock: clock},
+		Classifications: classificationRepo,
+	}
+	handler := inboundhttp.NewRouter(s, nil, "")
+
+	binID, _ := shared.NewBinId("A-1-1")
+	bin, _ := location.NewBin(binID, shared.Quantity(100))
+	_ = locationRepo.Save(context.Background(), bin)
+
+	ts := testServer{handler: handler, stock: stockRepo, locations: locationRepo}
+
+	// SKU-1: class 1 (explosives). SKU-2: class 8 (corrosives) — incompatible per the derived matrix.
+	classifyRec1 := ts.do(t, http.MethodPut, "/products/SKU-1/classification", map[string]any{
+		"handlingTags": []string{"Hazmat"}, "dotHazardClass": 1,
+	})
+	if classifyRec1.Code != http.StatusCreated {
+		t.Fatalf("expected 201 classifying SKU-1, got %d: %s", classifyRec1.Code, classifyRec1.Body.String())
+	}
+	classifyRec2 := ts.do(t, http.MethodPut, "/products/SKU-2/classification", map[string]any{
+		"handlingTags": []string{"Hazmat"}, "dotHazardClass": 8,
+	})
+	if classifyRec2.Code != http.StatusCreated {
+		t.Fatalf("expected 201 classifying SKU-2, got %d: %s", classifyRec2.Code, classifyRec2.Body.String())
+	}
+
+	stowRec := ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": 5, "binId": "A-1-1"})
+	if stowRec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 stowing SKU-1, got %d: %s", stowRec.Code, stowRec.Body.String())
+	}
+
+	rec := ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-2", "quantity": 5, "binId": "A-1-1"})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertProblemDetails(t, rec, http.StatusConflict, "hazmat-class-incompatible", "/stock/stow")
 }
