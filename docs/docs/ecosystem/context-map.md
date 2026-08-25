@@ -32,7 +32,7 @@ flowchart TB
     WM ==>|"<b>warehouse.workforce.events</b><br/>ShiftPlanCommitted"| WP
     WP ==>|"<b>warehouse.work-planning.events</b><br/>WorkReleased"| FE
     FE ==>|"<b>warehouse.fulfillment.events</b>"| WP
-    FL -.->|"<i>no wiring today</i>"| INV
+    INV -.->|"<b>GET /locations/{code}/classification</b><br/>sync HTTP, scoped to<br/>Hazmat/TemperatureSensitive SKUs"| FL
     FL -.->|"<i>no wiring today</i>"| WES
 
     classDef this fill:#0f766e,stroke:#134e4a,color:#fff,stroke-width:4px;
@@ -62,8 +62,14 @@ repository, not against intent.
 | `fulfillment-execution` | `warehouse.fulfillment.events` | `wes-work-planning` | ✅ |
 | `facility-layout` | — | — | ❌ **no Kafka adapter exists** — only an in-process log publisher |
 
-`inventory-storage` has **no inbound consumer at all**. It publishes and serves
-HTTP; it subscribes to nothing.
+`inventory-storage` has **no inbound Kafka consumer at all**. It publishes and
+serves HTTP; it subscribes to no topic. It does, since ADR 0009, make one
+**synchronous HTTP call outward**: `StowStock` reads
+`GET /locations/{locationCode}/classification` from `facility-layout` when
+stowing a SKU classified `Hazmat` or `TemperatureSensitive`, gated by
+`LOCATION_LOOKUP_MODE` (default `permissive`, i.e. off). This is a
+request/response dependency, not a message-bus one, and does not appear in
+the Kafka table above.
 
 ## This service's edges
 
@@ -110,21 +116,27 @@ concepts. This is the concrete form of the rule that worker identity,
 shift patterns and real-time floor conditions must never leak into the system
 of record.
 
-### ← `facility-layout` (strategic only, **not built**)
+### ← `facility-layout` (partial: live synchronous read, no event wiring)
 
-:::info Honest status
-There is **no live wiring** between `inventory-storage` and `facility-layout`.
-This repository contains no consumer, no client, no dependency and no
-configuration referencing it; `facility-layout` has no Kafka adapter to consume
-*from*. Any diagram showing an arrow between them today would be fiction.
+:::info Status as of ADR 0009
+There is now **one live wire** between `inventory-storage` and
+`facility-layout`: a synchronous HTTP read, `GET
+/locations/{locationCode}/classification`, called from `StowStock` to
+enforce hazmat/temperature-class placement rules (see
+[ADR 0009](/docs/adr/0009-product-classification-as-sku-master-data)).
+There is still **no Kafka wiring** in either direction — this is a request/
+response dependency, not an event subscription, and it is scoped: only SKUs
+this service has classified `Hazmat` or `TemperatureSensitive` trigger the
+call at all, and it is disabled by default (`LOCATION_LOOKUP_MODE=permissive`).
 :::
 
-The strategic relationship is real even though the wire is not.
+The strategic relationship goes further than this one endpoint.
 `facility-layout` is a **Generic subdomain** and an **Open Host Service** for
 physical warehouse structure. Its own `CLAUDE.md` positions the other four
 services — this one included — as downstream **Conformists** to whatever it
 publishes, and notes that actually wiring that consumption is "a separate,
-later, additive task in those repos."
+later, additive task in those repos." ADR 0009 is the first slice of that
+task landing here: a single read, for a single, narrow purpose.
 
 The reasoning for extracting it, from `facility-layout`'s own classification:
 
@@ -137,17 +149,18 @@ That is `warehouse-systems-ddd.md`'s "extract generic logic instead of
 duplicating it" discipline — its Cartonization example — applied to physical
 location.
 
-**What the integration would look like, when built:** `facility-layout` becomes
-the source of truth this service's `Bin` validates against. `StowStock`'s
-location-scan check would consult it (is this a real, active, correctly-typed
-slot?) instead of only checking that the bin exists in `LocationRepo`.
-Placement policy — temperature class, hazmat, size fit — would stay in
-`facility-layout`'s `PlacementRule` model and would *not* migrate here;
-importing slotting policy into the stock ledger would be fixed slotting
-reintroduced through the back door.
+**What ADR 0009 did NOT do:** `StowStock`'s location-scan check still only
+confirms the bin exists in this service's own `LocationRepo` — it does not
+validate the bin against facility-layout's location catalog as "real,
+active, correctly-typed." The new call is narrowly scoped to hazmat/
+temperature placement policy, sourced from `Zone.Hazmat` /
+`Zone.TemperatureClass`, for classified SKUs only. General location
+validity, and any placement policy for `Oversized`/`HighValue`/`Fragile`
+tags, remains unbuilt and would be a further, separate extension of this
+same edge.
 
-Until that exists, a `Bin` here remains an id, a capacity and an occupancy,
-seeded as infrastructure data.
+A `Bin` here remains an id, a capacity and an occupancy, seeded as
+infrastructure data — this ADR did not change that.
 
 ## Where this sits in the reference model
 

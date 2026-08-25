@@ -14,6 +14,7 @@ import (
 
 	inboundhttp "github.com/claudioed/inventory-storage/internal/adapters/inbound/http"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/events"
+	"github.com/claudioed/inventory-storage/internal/adapters/outbound/facilitylayout"
 	kafkaadapter "github.com/claudioed/inventory-storage/internal/adapters/outbound/kafka"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/memory"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/postgres"
@@ -68,7 +69,7 @@ func run() error {
 	migrationsPath := getenv("MIGRATIONS_PATH", "migrations")
 	eventPublisher := getenv("EVENT_PUBLISHER", "log")
 
-	stockRepo, locationRepo, reservationRepo, publisher, closeAdapters, err := buildAdapters(databaseURL, migrationsPath, eventPublisher, logger)
+	stockRepo, locationRepo, reservationRepo, classificationRepo, publisher, closeAdapters, err := buildAdapters(databaseURL, migrationsPath, eventPublisher, logger)
 	if err != nil {
 		return err
 	}
@@ -80,15 +81,21 @@ func run() error {
 	}
 
 	clock := memory.SystemClock{}
+	locationLookup := buildLocationLookup(getenv("LOCATION_LOOKUP_MODE", "permissive"), os.Getenv("FACILITY_LAYOUT_BASE_URL"), logger)
 
 	server := &inboundhttp.Server{
-		ReceiveStock:      &usecases.ReceiveStock{Events: publisher, Clock: clock},
-		StowStock:         &usecases.StowStock{Stock: stockRepo, Locations: locationRepo, Events: publisher, Clock: clock},
+		ReceiveStock: &usecases.ReceiveStock{Events: publisher, Clock: clock},
+		StowStock: &usecases.StowStock{
+			Stock: stockRepo, Locations: locationRepo, Events: publisher, Clock: clock,
+			Classifications: classificationRepo, LocationLookup: locationLookup,
+		},
 		ReserveStock:      &usecases.ReserveStock{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, Metrics: reservationMetrics},
 		RevokeReservation: &usecases.RevokeReservation{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, Metrics: reservationMetrics},
 		ConfirmPick:       &usecases.ConfirmPick{Stock: stockRepo, Locations: locationRepo, Reservations: reservationRepo, Events: publisher, Clock: clock},
 		GetUsable:         &usecases.GetUsable{Stock: stockRepo},
 		RunCycleCount:     &usecases.RunCycleCount{Stock: stockRepo, Events: publisher, Clock: clock},
+		ClassifyProduct:   &usecases.ClassifyProduct{Classifications: classificationRepo, Events: publisher, Clock: clock},
+		Classifications:   classificationRepo,
 	}
 
 	httpServer := &http.Server{
@@ -147,16 +154,17 @@ func newLogger(level string) *slog.Logger {
 // publisher via eventPublisher="kafka" (EVENT_PUBLISHER env), independent of
 // which repos are in use.
 func buildAdapters(databaseURL, migrationsPath, eventPublisher string, logger *slog.Logger) (
-	ports.StockRepo, ports.LocationRepo, ports.ReservationRepo, ports.EventPublisher, func(), error,
+	ports.StockRepo, ports.LocationRepo, ports.ReservationRepo, ports.ProductClassificationRepo, ports.EventPublisher, func(), error,
 ) {
 	noop := func() {}
 
 	var (
-		stockRepo       ports.StockRepo
-		locationRepo    ports.LocationRepo
-		reservationRepo ports.ReservationRepo
-		defaultPub      ports.EventPublisher
-		closeRepos      = noop
+		stockRepo          ports.StockRepo
+		locationRepo       ports.LocationRepo
+		reservationRepo    ports.ReservationRepo
+		classificationRepo ports.ProductClassificationRepo
+		defaultPub         ports.EventPublisher
+		closeRepos         = noop
 	)
 
 	if databaseURL == "" {
@@ -164,26 +172,28 @@ func buildAdapters(databaseURL, migrationsPath, eventPublisher string, logger *s
 		stockRepo = memory.NewStockRepo()
 		locationRepo = memory.NewLocationRepo()
 		reservationRepo = memory.NewReservationRepo()
+		classificationRepo = memory.NewProductClassificationRepo()
 		defaultPub = events.NewLogPublisher(logger)
 	} else {
 		if err := postgres.RunMigrations(databaseURL, migrationsPath); err != nil {
-			return nil, nil, nil, nil, noop, err
+			return nil, nil, nil, nil, nil, noop, err
 		}
 
 		pool, err := postgres.NewPool(context.Background(), databaseURL)
 		if err != nil {
-			return nil, nil, nil, nil, noop, err
+			return nil, nil, nil, nil, nil, noop, err
 		}
 
 		stockRepo = postgres.NewStockRepo(pool)
 		locationRepo = postgres.NewLocationRepo(pool)
 		reservationRepo = postgres.NewReservationRepo(pool)
+		classificationRepo = postgres.NewProductClassificationRepo(pool)
 		defaultPub = postgres.NewEventPublisher(pool)
 		closeRepos = pool.Close
 	}
 
 	if !strings.EqualFold(eventPublisher, "kafka") {
-		return stockRepo, locationRepo, reservationRepo, defaultPub, closeRepos, nil
+		return stockRepo, locationRepo, reservationRepo, classificationRepo, defaultPub, closeRepos, nil
 	}
 
 	brokers := strings.Split(getenv("KAFKA_BROKERS", "localhost:9092"), ",")
@@ -197,7 +207,20 @@ func buildAdapters(databaseURL, migrationsPath, eventPublisher string, logger *s
 		closeRepos()
 	}
 
-	return stockRepo, locationRepo, reservationRepo, kafkaadapter.NewPublisher(writer, reservationRepo), closeAll, nil
+	return stockRepo, locationRepo, reservationRepo, classificationRepo, kafkaadapter.NewPublisher(writer, reservationRepo), closeAll, nil
+}
+
+// buildLocationLookup selects the outbound LocationClassificationLookup
+// adapter via LOCATION_LOOKUP_MODE (http|permissive), defaulting to
+// "permissive" so existing tests, CI and deployments that do not set the
+// env var are unaffected — mirroring the EVENT_PUBLISHER=kafka|log
+// pattern. "http" requires FACILITY_LAYOUT_BASE_URL.
+func buildLocationLookup(mode, facilityLayoutBaseURL string, logger *slog.Logger) ports.LocationClassificationLookup {
+	if !strings.EqualFold(mode, "http") {
+		return facilitylayout.NewPermissiveLookup()
+	}
+	logger.Info("location classification lookup configured", "mode", "http", "facility_layout_base_url", facilityLayoutBaseURL)
+	return facilitylayout.NewClient(facilityLayoutBaseURL, nil)
 }
 
 func getenv(key, fallback string) string {

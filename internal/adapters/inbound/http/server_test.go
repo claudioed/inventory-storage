@@ -14,6 +14,7 @@ import (
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/memory"
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
 	"github.com/claudioed/inventory-storage/internal/domain/location"
+	"github.com/claudioed/inventory-storage/internal/domain/product"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 )
 
@@ -27,6 +28,7 @@ func newTestServer() testServer {
 	stockRepo := memory.NewStockRepo()
 	locationRepo := memory.NewLocationRepo()
 	reservationRepo := memory.NewReservationRepo()
+	classificationRepo := memory.NewProductClassificationRepo()
 	publisher := events.NewBufferedPublisher()
 	clock := memory.NewFixedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 
@@ -38,6 +40,8 @@ func newTestServer() testServer {
 		ConfirmPick:       &usecases.ConfirmPick{Stock: stockRepo, Locations: locationRepo, Reservations: reservationRepo, Events: publisher, Clock: clock},
 		GetUsable:         &usecases.GetUsable{Stock: stockRepo},
 		RunCycleCount:     &usecases.RunCycleCount{Stock: stockRepo, Events: publisher, Clock: clock},
+		ClassifyProduct:   &usecases.ClassifyProduct{Classifications: classificationRepo, Events: publisher, Clock: clock},
+		Classifications:   classificationRepo,
 	}
 
 	return testServer{handler: inboundhttp.NewRouter(s, nil, ""), stock: stockRepo, locations: locationRepo}
@@ -271,4 +275,159 @@ func TestRunCycleCount_Endpoint(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
+}
+
+func TestClassifyProduct_Endpoint_Create(t *testing.T) {
+	ts := newTestServer()
+	rec := ts.do(t, http.MethodPut, "/products/SKU-1/classification", map[string]any{
+		"handlingTags": []string{"Hazmat", "Fragile"},
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		SKU          string   `json:"sku"`
+		HandlingTags []string `json:"handlingTags"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unexpected error decoding response: %v", err)
+	}
+	if body.SKU != "SKU-1" {
+		t.Fatalf("expected sku=SKU-1, got %s", body.SKU)
+	}
+	if len(body.HandlingTags) != 2 {
+		t.Fatalf("expected 2 handling tags, got %v", body.HandlingTags)
+	}
+}
+
+func TestClassifyProduct_Endpoint_Replace_Returns200(t *testing.T) {
+	ts := newTestServer()
+	ts.do(t, http.MethodPut, "/products/SKU-1/classification", map[string]any{
+		"handlingTags": []string{"Fragile"},
+	})
+
+	rec := ts.do(t, http.MethodPut, "/products/SKU-1/classification", map[string]any{
+		"handlingTags": []string{"Hazmat"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on replace, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestClassifyProduct_Endpoint_TemperatureSensitiveWithClass(t *testing.T) {
+	ts := newTestServer()
+	rec := ts.do(t, http.MethodPut, "/products/SKU-1/classification", map[string]any{
+		"handlingTags":     []string{"TemperatureSensitive"},
+		"temperatureClass": "Frozen",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		TemperatureClass string `json:"temperatureClass"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body.TemperatureClass != "Frozen" {
+		t.Fatalf("expected temperatureClass=Frozen, got %s", body.TemperatureClass)
+	}
+}
+
+func TestClassifyProduct_Endpoint_TemperatureSensitiveWithoutClass_Rejected(t *testing.T) {
+	ts := newTestServer()
+	rec := ts.do(t, http.MethodPut, "/products/SKU-1/classification", map[string]any{
+		"handlingTags": []string{"TemperatureSensitive"},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertProblemDetails(t, rec, http.StatusBadRequest, "temperature-class-required", "/products/SKU-1/classification")
+}
+
+func TestClassifyProduct_Endpoint_UnknownTag_Rejected(t *testing.T) {
+	ts := newTestServer()
+	rec := ts.do(t, http.MethodPut, "/products/SKU-1/classification", map[string]any{
+		"handlingTags": []string{"Explosive"},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertProblemDetails(t, rec, http.StatusBadRequest, "unknown-handling-tag", "/products/SKU-1/classification")
+}
+
+func TestGetProductClassification_Endpoint_Found(t *testing.T) {
+	ts := newTestServer()
+	ts.do(t, http.MethodPut, "/products/SKU-1/classification", map[string]any{
+		"handlingTags": []string{"HighValue"},
+	})
+
+	rec := ts.do(t, http.MethodGet, "/products/SKU-1/classification", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		SKU          string   `json:"sku"`
+		HandlingTags []string `json:"handlingTags"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body.SKU != "SKU-1" || len(body.HandlingTags) != 1 || body.HandlingTags[0] != "HighValue" {
+		t.Fatalf("unexpected classification response: %+v", body)
+	}
+}
+
+func TestGetProductClassification_Endpoint_NotFound(t *testing.T) {
+	ts := newTestServer()
+	rec := ts.do(t, http.MethodGet, "/products/SKU-UNKNOWN/classification", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertProblemDetails(t, rec, http.StatusNotFound, "product-classification-not-found", "/products/SKU-UNKNOWN/classification")
+}
+
+// StowStock's placement enforcement, exercised end-to-end over HTTP: a
+// Hazmat SKU stowed into a non-hazmat-rated bin is rejected 409 — proving
+// the wiring, not just the use-case unit test.
+func TestStowStock_Endpoint_HazmatPlacementRejected(t *testing.T) {
+	stockRepo := memory.NewStockRepo()
+	locationRepo := memory.NewLocationRepo()
+	classificationRepo := memory.NewProductClassificationRepo()
+	publisher := events.NewBufferedPublisher()
+	clock := memory.NewFixedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	lookup := &stubLookup{known: true, hazmat: false}
+
+	s := &inboundhttp.Server{
+		StowStock: &usecases.StowStock{
+			Stock: stockRepo, Locations: locationRepo, Events: publisher, Clock: clock,
+			Classifications: classificationRepo, LocationLookup: lookup,
+		},
+		ClassifyProduct: &usecases.ClassifyProduct{Classifications: classificationRepo, Events: publisher, Clock: clock},
+		Classifications: classificationRepo,
+	}
+	handler := inboundhttp.NewRouter(s, nil, "")
+
+	binID, _ := shared.NewBinId("A-1-1")
+	bin, _ := location.NewBin(binID, shared.Quantity(10))
+	_ = locationRepo.Save(context.Background(), bin)
+
+	ts := testServer{handler: handler, stock: stockRepo, locations: locationRepo}
+	classifyRec := ts.do(t, http.MethodPut, "/products/SKU-1/classification", map[string]any{"handlingTags": []string{"Hazmat"}})
+	if classifyRec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 classifying sku, got %d: %s", classifyRec.Code, classifyRec.Body.String())
+	}
+
+	rec := ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": 5, "binId": "A-1-1"})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertProblemDetails(t, rec, http.StatusConflict, "hazmat-zone-required", "/stock/stow")
+}
+
+// stubLookup is a minimal ports.LocationClassificationLookup used only by
+// the HTTP-level placement test above.
+type stubLookup struct {
+	known  bool
+	hazmat bool
+}
+
+func (s *stubLookup) GetSlotAttributes(_ context.Context, _ shared.BinId) (product.SlotAttributes, error) {
+	return product.SlotAttributes{Known: s.known, Hazmat: s.hazmat}, nil
 }

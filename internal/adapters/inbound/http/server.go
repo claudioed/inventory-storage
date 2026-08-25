@@ -10,7 +10,9 @@ import (
 	"github.com/riandyrn/otelchi"
 	otelchimetric "github.com/riandyrn/otelchi/metric"
 
+	"github.com/claudioed/inventory-storage/internal/application/ports"
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
+	"github.com/claudioed/inventory-storage/internal/domain/product"
 	"github.com/claudioed/inventory-storage/internal/domain/reservation"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 	"github.com/claudioed/inventory-storage/internal/domain/stock"
@@ -25,6 +27,13 @@ type Server struct {
 	ConfirmPick       *usecases.ConfirmPick
 	GetUsable         *usecases.GetUsable
 	RunCycleCount     *usecases.RunCycleCount
+	ClassifyProduct   *usecases.ClassifyProduct
+	// Classifications backs the read-only GET endpoint. It is the same
+	// port ClassifyProduct writes through; there is no dedicated
+	// "GetProductClassification" use case because the read is a direct,
+	// no-invariant repo lookup — consistent with how GetUsable is the
+	// only use case that reads without also writing.
+	Classifications ports.ProductClassificationRepo
 }
 
 // DefaultServiceName labels this service's spans and metrics when the caller
@@ -67,6 +76,8 @@ func NewRouter(s *Server, logger *slog.Logger, serviceName string) http.Handler 
 	r.Post("/reservations/{id}/confirm-pick", s.handleConfirmPick)
 	r.Get("/inventory/{sku}/usable", s.handleGetUsable)
 	r.Post("/bins/{binId}/cycle-count", s.handleRunCycleCount)
+	r.Put("/products/{sku}/classification", s.handleClassifyProduct)
+	r.Get("/products/{sku}/classification", s.handleGetProductClassification)
 
 	return r
 }
@@ -236,6 +247,81 @@ func (s *Server) handleRunCycleCount(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleClassifyProduct(w http.ResponseWriter, r *http.Request) {
+	skuParam := chi.URLParam(r, "sku")
+	sku, err := shared.NewSKU(skuParam)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	var req classifyProductRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+
+	tags := make([]product.HandlingTag, 0, len(req.HandlingTags))
+	for _, raw := range req.HandlingTags {
+		tag, err := product.ParseHandlingTag(raw)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		tags = append(tags, tag)
+	}
+
+	var temperatureClass product.TemperatureClass
+	if req.TemperatureClass != "" {
+		temperatureClass, err = product.ParseTemperatureClass(req.TemperatureClass)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+	}
+
+	existing, err := s.Classifications.FindBySKU(r.Context(), sku)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	c, err := s.ClassifyProduct.Execute(r.Context(), sku, tags, temperatureClass)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	// 201 Created for a first-time classification (this SKU had none
+	// before this call), 200 OK when replacing an existing one — the same
+	// create-vs-replace distinction PUT semantics call for.
+	status := http.StatusOK
+	if existing == nil {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, toProductClassificationResponse(c))
+}
+
+func (s *Server) handleGetProductClassification(w http.ResponseWriter, r *http.Request) {
+	skuParam := chi.URLParam(r, "sku")
+	sku, err := shared.NewSKU(skuParam)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	c, err := s.Classifications.FindBySKU(r.Context(), sku)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if c == nil {
+		writeError(w, r, usecases.ErrProductClassificationNotFound)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, toProductClassificationResponse(c))
+}
+
 const timeFormat = "2006-01-02T15:04:05Z07:00"
 
 func toStockUnitResponse(u *stock.StockUnit) stockUnitResponse {
@@ -262,6 +348,19 @@ func toReservationResponse(res *reservation.Reservation) reservationResponse {
 		Status:      string(res.Status()),
 		Allocations: allocations,
 		ExpiresAt:   res.ExpiresAt().Format(timeFormat),
+	}
+}
+
+func toProductClassificationResponse(c *product.ProductClassification) productClassificationResponse {
+	tags := c.HandlingTags()
+	handlingTags := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		handlingTags = append(handlingTags, string(tag))
+	}
+	return productClassificationResponse{
+		SKU:              c.SKU().String(),
+		HandlingTags:     handlingTags,
+		TemperatureClass: string(c.TemperatureClass()),
 	}
 }
 

@@ -66,6 +66,17 @@ type cycleCountResponse struct {
 	Discrepancy bool   `json:"discrepancy"`
 }
 
+type classifyProductRequest struct {
+	HandlingTags     []string `json:"handlingTags"`
+	TemperatureClass string   `json:"temperatureClass,omitempty"`
+}
+
+type productClassificationResponse struct {
+	SKU              string   `json:"sku"`
+	HandlingTags     []string `json:"handlingTags"`
+	TemperatureClass string   `json:"temperatureClass,omitempty"`
+}
+
 // problemDetails is the RFC 7807 (Problem Details for HTTP APIs) response
 // body used for every error response in this service.
 type problemDetails struct {

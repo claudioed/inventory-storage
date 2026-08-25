@@ -11,20 +11,22 @@ import (
 // env bundles a fresh set of in-memory adapters for each test, so tests
 // never share state.
 type env struct {
-	Stock        *memory.StockRepo
-	Locations    *memory.LocationRepo
-	Reservations *memory.ReservationRepo
-	Events       *events.BufferedPublisher
-	Clock        *memory.FixedClock
+	Stock           *memory.StockRepo
+	Locations       *memory.LocationRepo
+	Reservations    *memory.ReservationRepo
+	Classifications *memory.ProductClassificationRepo
+	Events          *events.BufferedPublisher
+	Clock           *memory.FixedClock
 }
 
 func newEnv() env {
 	return env{
-		Stock:        memory.NewStockRepo(),
-		Locations:    memory.NewLocationRepo(),
-		Reservations: memory.NewReservationRepo(),
-		Events:       events.NewBufferedPublisher(),
-		Clock:        memory.NewFixedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
+		Stock:           memory.NewStockRepo(),
+		Locations:       memory.NewLocationRepo(),
+		Reservations:    memory.NewReservationRepo(),
+		Classifications: memory.NewProductClassificationRepo(),
+		Events:          events.NewBufferedPublisher(),
+		Clock:           memory.NewFixedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
 	}
 }
 
