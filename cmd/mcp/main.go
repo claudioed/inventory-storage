@@ -84,6 +84,13 @@ func run() error {
 		RevokeReservation: &usecases.RevokeReservation{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock},
 		Stock:             stockRepo,
 	}
+	// When the inventory-reports REST service is reachable, expose the curated
+	// read-only Inventory Flow & Accuracy report tool, which reads through that
+	// REST surface rather than the analytical database directly (ADR-0011).
+	if reportsBaseURL := os.Getenv("REPORTS_BASE_URL"); reportsBaseURL != "" {
+		deps.Reports = inboundmcp.NewReportsRESTClient(reportsBaseURL, nil)
+		logger.Info("analytics report tool enabled", "reports_base_url", reportsBaseURL)
+	}
 	server := inboundmcp.NewServer(deps)
 
 	auth := inboundmcp.NewStaticKeyAuth(authKeys(logger))

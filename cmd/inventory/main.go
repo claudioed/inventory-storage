@@ -198,16 +198,30 @@ func buildAdapters(databaseURL, migrationsPath, eventPublisher string, logger *s
 
 	brokers := strings.Split(getenv("KAFKA_BROKERS", "localhost:9092"), ",")
 	writer := kafkaadapter.NewWriter(brokers...)
-	logger.Info("event publisher configured", "publisher", "kafka", "topic", kafkaadapter.Topic, "brokers", brokers)
+	integrationPub := kafkaadapter.NewPublisher(writer, reservationRepo)
+
+	// Fan-out: the same domain event is forwarded to BOTH the integration
+	// topic (via the untouched integration Publisher) AND the dedicated
+	// analytics topic (via a separate AnalyticsPublisher), behind the single
+	// ports.EventPublisher the use cases depend on. The integration contract
+	// (warehouse.inventory.events) is unchanged; the analytics stream
+	// (warehouse.inventory.analytics) evolves independently (ADR-0011).
+	analyticsPub := kafkaadapter.NewAnalyticsPublisher(brokers, reservationRepo, nil)
+	publisher := events.NewMultiPublisher(integrationPub, analyticsPub)
+	logger.Info("event publisher configured", "publisher", "kafka",
+		"integration_topic", kafkaadapter.Topic, "analytics_topic", kafkaadapter.AnalyticsTopic, "brokers", brokers)
 
 	closeAll := func() {
 		if err := writer.Close(); err != nil {
-			logger.Error("error closing kafka writer", "error", err)
+			logger.Error("error closing kafka integration writer", "error", err)
+		}
+		if err := analyticsPub.Close(); err != nil {
+			logger.Error("error closing kafka analytics writer", "error", err)
 		}
 		closeRepos()
 	}
 
-	return stockRepo, locationRepo, reservationRepo, classificationRepo, kafkaadapter.NewPublisher(writer, reservationRepo), closeAll, nil
+	return stockRepo, locationRepo, reservationRepo, classificationRepo, publisher, closeAll, nil
 }
 
 // buildLocationLookup selects the outbound LocationClassificationLookup
