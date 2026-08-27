@@ -61,6 +61,12 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'Analytics (Data Product)',
+      collapsed: false,
+      items: ['analytics/inventory-flow-accuracy-report'],
+    },
+    {
+      type: 'category',
       label: 'Architecture Decision Records',
       link: {type: 'doc', id: 'adr/about'},
       items: [
@@ -74,6 +80,7 @@ const sidebars: SidebarsConfig = {
         'adr/0008-mcp-inbound-adapter',
         'adr/0009-product-classification-as-sku-master-data',
         'adr/0010-dot-hazard-class-and-same-bin-segregation',
+        'adr/0011-analytical-data-product',
       ],
     },
   ],

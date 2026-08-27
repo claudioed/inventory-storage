@@ -32,22 +32,30 @@ domain; adapters depend on application/domain.**
 
 ```
 cmd/inventory/               composition root (main.go)
+cmd/inventory-projector/     analytics WRITER: consumes the analytics topic, projects
+cmd/inventory-reports/       analytics READER: read-only report REST
+cmd/mcp/                      MCP inbound adapter (Streamable HTTP)
 internal/
   domain/                    pure Go — no framework, no SQL types
     location/                Bin aggregate (capacity, occupancy)
     stock/                   StockUnit aggregate (SKU@location, qty, state)
     reservation/              Reservation aggregate (revocable, timeout)
     shared/                  SKU, BinId, Quantity value objects; domain events
+  analytics/report/          read-model region (depends on nothing) for the data product
   application/
     ports/                   outbound interfaces the application depends on
     usecases/                one struct per use case (ReceiveStock, StowStock, ...)
   adapters/
-    inbound/http/            chi router, DTOs, domain-error -> HTTP mapping
+    inbound/http/            chi router, DTOs, domain-error -> HTTP mapping; reports REST
+    inbound/kafka/           analytics consumer (projector)
+    inbound/mcp/             MCP tools incl. the read-only report tool
     outbound/postgres/       pgxpool repos + golang-migrate migrations
     outbound/memory/         thread-safe in-memory repos (tests, local dev)
-    outbound/events/         log publisher + buffered publisher (kafka-ready interface)
-    outbound/kafka/          Kafka publisher (integration events, see below)
-migrations/                  golang-migrate SQL files
+    outbound/events/         log publisher + buffered + multi (fan-out) publisher
+    outbound/kafka/          Kafka integration + analytics publishers (see below)
+    outbound/analyticsstore/ analytical Postgres projection + read-only reader
+migrations/                  golang-migrate SQL files (OLTP)
+migrations/analytics/        golang-migrate SQL files (analytical read model)
 ```
 
 The application layer never imports an adapter package — it depends only on
@@ -203,7 +211,9 @@ yet.
   Kafka adapter looks the reservation back up via `ReservationRepo` to fill in
   `sku`/`quantity`/`demand_ref`.) Every other domain event (`StockReceived`,
   `ItemStowed`, ...) is not part of this integration contract and is not
-  forwarded to Kafka.
+  forwarded to `warehouse.inventory.events`. (Those events DO feed the separate
+  analytics data product on `warehouse.inventory.analytics` — see
+  [Analytics](#analytics-data-product) below.)
 
 Run it against the real broker:
 
@@ -218,6 +228,55 @@ docker exec -it warehouse-kafka /opt/kafka/bin/kafka-console-consumer.sh \
   --bootstrap-server localhost:9092 --topic warehouse.inventory.events --from-beginning
 
 # then drive a reservation + revoke through the API (see curl walkthrough above)
+```
+
+## Analytics (data product)
+
+Alongside the OLTP service, Inventory & Storage owns an **analytical data
+product** — the *Inventory Flow & Accuracy* report — built entirely from its own
+domain events. It is a lightweight data mesh with no central data platform: a
+dedicated analytics topic, a separate analytical database, and two extra
+read-model processes. See [ADR-0011](docs/docs/adr/0011-analytical-data-product.md)
+and the [report contract](docs/docs/analytics/inventory-flow-accuracy-report.md).
+
+- **Analytics topic**: `warehouse.inventory.analytics` (separate from the
+  integration topic; published by a NEW outbound adapter, fanned out alongside
+  the integration publisher when `EVENT_PUBLISHER=kafka`). Envelope v1:
+  `{event_id, event_type, occurred_at, source, schema_version, data}`.
+- **Analytical database**: its own `ANALYTICS_DATABASE_URL`, its own migrations
+  (`migrations/analytics/`), and a read-only role for the reader.
+- **Three processes, one writer**:
+  - `cmd/inventory` — the OLTP binary (unchanged; additionally fans events onto
+    the analytics topic under `EVENT_PUBLISHER=kafka`).
+  - `cmd/inventory-projector` — the ONLY writer. Consumes the analytics topic
+    (`StartOffset = FirstOffset`, so a fresh group replays history), applies
+    idempotent projections, and runs the analytical migrations on start.
+  - `cmd/inventory-reports` — a read-only reader serving the report over REST.
+- **MCP**: when `REPORTS_BASE_URL` is set, `cmd/mcp` exposes the curated
+  read-only tool `get_inventory_flow_accuracy_report`, which reads through the
+  reports REST rather than the analytical database directly.
+
+Run the analytics side locally (requires Kafka and the analytical database):
+
+```sh
+# 1. OLTP service, fanning events onto both topics
+export EVENT_PUBLISHER=kafka
+export KAFKA_BROKERS=localhost:9092
+export DATABASE_URL='postgres://inventory:***@localhost:5432/inventory?sslmode=disable'
+go run ./cmd/inventory
+
+# 2. Projector (the only writer of the analytical DB)
+export ANALYTICS_DATABASE_URL='postgres://inventory:***@localhost:5432/inventory_analytics?sslmode=disable'
+export KAFKA_BROKERS=localhost:9092
+go run ./cmd/inventory-projector       # admin/health on :8091
+
+# 3. Reports reader (read-only)
+export ANALYTICS_DATABASE_URL='postgres://inventory_ro:***@localhost:5432/inventory_analytics?sslmode=disable'
+go run ./cmd/inventory-reports         # REST on :8092
+
+# 4. Query the report
+curl 'http://localhost:8092/reports/flow-accuracy?from=2026-01-01T00:00:00Z&to=2027-01-01T00:00:00Z'
+curl 'http://localhost:8092/reports/flow-accuracy/freshness'
 ```
 
 ## Observability
