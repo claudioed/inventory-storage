@@ -34,6 +34,25 @@ internal/
 migrations/                  golang-migrate SQL files
 ```
 
+## Analytics data product (ADR-0011)
+
+Additive read side built from this service's OWN domain events. The OLTP
+domain/application layers are NOT modified and must NOT import the analytics
+store (arch-test enforces). `internal/analytics/report/` depends on nothing.
+
+- Events are fanned to a SEPARATE topic `warehouse.inventory.analytics` by a new
+  outbound adapter; the integration topic/publisher are untouched. Selected by
+  `EVENT_PUBLISHER=kafka` (fan-out alongside the integration publisher).
+- Separate analytical Postgres (`ANALYTICS_DATABASE_URL`), own migrations
+  (`migrations/analytics/`), read-only reader role.
+- Three processes: `cmd/inventory` (OLTP), `cmd/inventory-projector` (the ONLY
+  writer; consumes the analytics topic from FirstOffset, idempotent on
+  event_id), `cmd/inventory-reports` (read-only reader, `GET /reports/...`).
+  Report exposed via the MCP server too.
+- Report: **Inventory Flow & Accuracy**, keyed per SKU/bin × hour (received/
+  picked quantity, stow/reservation/cycle-count/discrepancy counts).
+- `GET /reports/.../freshness` reports projection lag.
+
 ## Ubiquitous Language (use these exact names)
 
 - **StockUnit** — a quantity of a SKU at a specific Bin. Every physical item has
