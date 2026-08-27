@@ -32,22 +32,30 @@ domain; adapters depend on application/domain.**
 
 ```
 cmd/inventory/               composition root (main.go)
+cmd/inventory-projector/     analytics WRITER: consumes the analytics topic, projects
+cmd/inventory-reports/       analytics READER: read-only report REST
+cmd/mcp/                      MCP inbound adapter (Streamable HTTP)
 internal/
   domain/                    pure Go — no framework, no SQL types
     location/                Bin aggregate (capacity, occupancy)
     stock/                   StockUnit aggregate (SKU@location, qty, state)
     reservation/              Reservation aggregate (revocable, timeout)
     shared/                  SKU, BinId, Quantity value objects; domain events
+  analytics/report/          read-model region (depends on nothing) for the data product
   application/
     ports/                   outbound interfaces the application depends on
     usecases/                one struct per use case (ReceiveStock, StowStock, ...)
   adapters/
-    inbound/http/            chi router, DTOs, domain-error -> HTTP mapping
+    inbound/http/            chi router, DTOs, domain-error -> HTTP mapping; reports REST
+    inbound/kafka/           analytics consumer (projector)
+    inbound/mcp/             MCP tools incl. the read-only report tool
     outbound/postgres/       pgxpool repos + golang-migrate migrations
     outbound/memory/         thread-safe in-memory repos (tests, local dev)
-    outbound/events/         log publisher + buffered publisher (kafka-ready interface)
-    outbound/kafka/          Kafka publisher (integration events, see below)
-migrations/                  golang-migrate SQL files
+    outbound/events/         log publisher + buffered + multi (fan-out) publisher
+    outbound/kafka/          Kafka integration + analytics publishers (see below)
+    outbound/analyticsstore/ analytical Postgres projection + read-only reader
+migrations/                  golang-migrate SQL files (OLTP)
+migrations/analytics/        golang-migrate SQL files (analytical read model)
 ```
 
 The application layer never imports an adapter package — it depends only on
@@ -203,7 +211,9 @@ yet.
   Kafka adapter looks the reservation back up via `ReservationRepo` to fill in
   `sku`/`quantity`/`demand_ref`.) Every other domain event (`StockReceived`,
   `ItemStowed`, ...) is not part of this integration contract and is not
-  forwarded to Kafka.
+  forwarded to `warehouse.inventory.events`. (Those events DO feed the separate
+  analytics data product on `warehouse.inventory.analytics` — see
+  [Analytics](#analytics-data-product) below.)
 
 Run it against the real broker:
 
@@ -218,6 +228,140 @@ docker exec -it warehouse-kafka /opt/kafka/bin/kafka-console-consumer.sh \
   --bootstrap-server localhost:9092 --topic warehouse.inventory.events --from-beginning
 
 # then drive a reservation + revoke through the API (see curl walkthrough above)
+```
+
+## Analytics (data product)
+
+Alongside the OLTP service, Inventory & Storage owns an **analytical data
+product** — the *Inventory Flow & Accuracy* report — built entirely from its own
+domain events. It is a lightweight data mesh with no central data platform: a
+dedicated analytics topic, a separate analytical database, and two extra
+read-model processes. See [ADR-0011](docs/docs/adr/0011-analytical-data-product.md)
+and the [report contract](docs/docs/analytics/inventory-flow-accuracy-report.md).
+
+- **Analytics topic**: `warehouse.inventory.analytics` (separate from the
+  integration topic; published by a NEW outbound adapter, fanned out alongside
+  the integration publisher when `EVENT_PUBLISHER=kafka`). Envelope v1:
+  `{event_id, event_type, occurred_at, source, schema_version, data}`.
+- **Analytical database**: its own `ANALYTICS_DATABASE_URL`, its own migrations
+  (`migrations/analytics/`), and a read-only role for the reader.
+- **Three processes, one writer**:
+  - `cmd/inventory` — the OLTP binary (unchanged; additionally fans events onto
+    the analytics topic under `EVENT_PUBLISHER=kafka`).
+  - `cmd/inventory-projector` — the ONLY writer. Consumes the analytics topic
+    (`StartOffset = FirstOffset`, so a fresh group replays history), applies
+    idempotent projections, and runs the analytical migrations on start.
+  - `cmd/inventory-reports` — a read-only reader serving the report over REST.
+- **MCP**: when `REPORTS_BASE_URL` is set, `cmd/mcp` exposes the curated
+  read-only tool `get_inventory_flow_accuracy_report`, which reads through the
+  reports REST rather than the analytical database directly.
+
+Run the analytics side locally (requires Kafka and the analytical database):
+
+```sh
+# 1. OLTP service, fanning events onto both topics
+export EVENT_PUBLISHER=kafka
+export KAFKA_BROKERS=localhost:9092
+export DATABASE_URL='postgres://inventory:***@localhost:5432/inventory?sslmode=disable'
+go run ./cmd/inventory
+
+# 2. Projector (the only writer of the analytical DB)
+export ANALYTICS_DATABASE_URL='postgres://inventory:***@localhost:5432/inventory_analytics?sslmode=disable'
+export KAFKA_BROKERS=localhost:9092
+go run ./cmd/inventory-projector       # admin/health on :8091
+
+# 3. Reports reader (read-only)
+export ANALYTICS_DATABASE_URL='postgres://inventory_ro:***@localhost:5432/inventory_analytics?sslmode=disable'
+go run ./cmd/inventory-reports         # REST on :8092
+
+# 4. Query the report
+curl 'http://localhost:8092/reports/flow-accuracy?from=2026-01-01T00:00:00Z&to=2027-01-01T00:00:00Z'
+curl 'http://localhost:8092/reports/flow-accuracy/freshness'
+```
+
+## Observability
+
+Traces and metrics are exported over **OTLP/gRPC** to an OpenTelemetry
+Collector; logs stay on stdout as JSON and carry the ids that tie them back to
+a trace. There is no `/metrics` endpoint — Prometheus exposition is the
+Collector's job, not this service's.
+
+### Environment variables
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | Collector's OTLP/gRPC receiver. Accepts a bare `host:port` (plaintext) or a full URL (`https://…` for TLS). |
+| `OTEL_SERVICE_NAME` | `inventory-storage` | `service.name` resource attribute, and the span/metric scope name. |
+| `SERVICE_VERSION` | `dev` | `service.version` resource attribute. |
+| `ENVIRONMENT` | `local` | `deployment.environment.name` resource attribute. |
+| `LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error`, case-insensitive. Also gates the OTel SDK's own diagnostics, which are bridged onto the same JSON logger. |
+
+A Collector is *expected* at `OTEL_EXPORTER_OTLP_ENDPOINT`, but is never
+required: the exporters dial lazily and no blocking dial option is set, so a
+Collector that is down or absent costs telemetry and nothing else. Startup,
+request latency and exit code are all unaffected — a failed final flush is
+logged at `WARN`, not returned. In the `warehouse-infra` kind cluster the
+endpoint points at the in-cluster Collector Service
+(`otel-collector.observability.svc.cluster.local:4317`, set by the Helm chart's
+`otel` values block).
+
+### What gets exported
+
+**Traces** — one server span per HTTP request, named after the *chi route
+pattern* rather than the raw path (`/reservations/{id}`, not one span name per
+reservation id), with these as children:
+
+- every Postgres query, prepare, batch, copy and pool acquire, via `otelpgx`.
+  Statements are normalized, so bound arguments — SKUs, bin codes, demand
+  references — never leave the process as span attributes;
+- `kafka.publish warehouse.inventory.events` for each integration event, with
+  the W3C `traceparent` injected into the message headers. A consumer that
+  extracts from those headers joins *this* trace, which is what makes the
+  reserve → release path visible end to end across services.
+
+**Metrics**
+
+- `http.server.request.duration` (histogram, seconds) — OTel HTTP semantic
+  conventions, from `otelchi`;
+- `inventory.reservations` (counter) — the business signal, with an
+  `outcome` attribute of `created` or `revoked`. It is recorded in the
+  `ReserveStock` / `RevokeReservation` use cases, not the HTTP handler, so it
+  counts reservations that were actually bound and durably saved rather than
+  requests that merely arrived;
+- Go runtime metrics (goroutines, GC, memory) via
+  `contrib/instrumentation/runtime`.
+
+**Logs** stay `log/slog` JSON on stdout. Any record written with a
+span-carrying context gains `trace_id` and `span_id`, so a log line pivots
+straight to its trace:
+
+```json
+{"time":"2026-08-23T20:09:13.9-03:00","level":"INFO","msg":"http request","method":"POST","path":"/reservations","status":201,"duration_ms":52,"trace_id":"0a225d107cf073c4f1f4ea2cadeb2941","span_id":"818a21eae51ab9de"}
+```
+
+### Trying it locally
+
+```sh
+# a Collector that just prints what it receives
+cat > /tmp/otelcol.yaml <<'YAML'
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+exporters:
+  debug:
+    verbosity: detailed
+service:
+  pipelines:
+    traces:  {receivers: [otlp], exporters: [debug]}
+    metrics: {receivers: [otlp], exporters: [debug]}
+YAML
+docker run --rm -p 4317:4317 -v /tmp/otelcol.yaml:/etc/otelcol-contrib/config.yaml \
+  otel/opentelemetry-collector-contrib:latest
+
+# in another shell
+go run ./cmd/inventory        # then drive the curl walkthrough above
 ```
 
 ## Local development / quality gate

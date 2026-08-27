@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/claudioed/inventory-storage/internal/domain/location"
+	"github.com/claudioed/inventory-storage/internal/domain/product"
 	"github.com/claudioed/inventory-storage/internal/domain/reservation"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 	"github.com/claudioed/inventory-storage/internal/domain/stock"
@@ -130,4 +131,61 @@ func (f *failingReservationRepo) NextID(ctx context.Context) (string, error) {
 		return "", errFake
 	}
 	return f.delegate.NextID(ctx)
+}
+
+// recordingMetrics counts the ports.ReservationMetrics calls a use case
+// makes, so tests can assert the business counter moves for the right
+// outcome — and only on the success path.
+type recordingMetrics struct {
+	created int
+	revoked int
+}
+
+func (m *recordingMetrics) ReservationCreated(context.Context) { m.created++ }
+func (m *recordingMetrics) ReservationRevoked(context.Context) { m.revoked++ }
+
+// fakeLocationLookup is a stub ports.LocationClassificationLookup used by
+// StowStock tests to simulate facility-layout responses without hitting
+// the network. attrs maps a BinId to the SlotAttributes it should report;
+// a BinId absent from the map is reported Known=false. failErr, if set, is
+// returned instead (simulating a transport/5xx failure) regardless of the
+// map.
+type fakeLocationLookup struct {
+	attrs   map[shared.BinId]product.SlotAttributes
+	failErr error
+}
+
+func (f *fakeLocationLookup) GetSlotAttributes(_ context.Context, binID shared.BinId) (product.SlotAttributes, error) {
+	if f.failErr != nil {
+		return product.SlotAttributes{}, f.failErr
+	}
+	if attrs, ok := f.attrs[binID]; ok {
+		return attrs, nil
+	}
+	return product.SlotAttributes{Known: false}, nil
+}
+
+// failingProductClassificationRepo wraps a real ProductClassificationRepo
+// but can be configured to fail on specific operations.
+type failingProductClassificationRepo struct {
+	delegate interface {
+		Save(ctx context.Context, c *product.ProductClassification) error
+		FindBySKU(ctx context.Context, sku shared.SKU) (*product.ProductClassification, error)
+	}
+	failSave      bool
+	failFindBySKU bool
+}
+
+func (f *failingProductClassificationRepo) Save(ctx context.Context, c *product.ProductClassification) error {
+	if f.failSave {
+		return errFake
+	}
+	return f.delegate.Save(ctx, c)
+}
+
+func (f *failingProductClassificationRepo) FindBySKU(ctx context.Context, sku shared.SKU) (*product.ProductClassification, error) {
+	if f.failFindBySKU {
+		return nil, errFake
+	}
+	return f.delegate.FindBySKU(ctx, sku)
 }

@@ -59,6 +59,13 @@ tags:
       Cycle counting: verifying a bin's physical contents against system
       records and reconciling discrepancies (shortfall marks stock
       Unlocated; overage is flagged for a separate receiving/audit process).
+  - name: Products
+    description: >
+      SKU-level product classification (Hazmat/Fragile/TemperatureSensitive/
+      Oversized/HighValue): master data this service owns as source of
+      truth, independent of any StockUnit or bin. Enforced by StowStock as
+      hazmat/temperature placement rules via a synchronous read from the
+      facility-layout bounded context (see ADR 0009).
   - name: Health
     description: Liveness probe.
 
@@ -218,17 +225,60 @@ paths:
                 detail: bin not found
                 instance: /stock/stow
         "409":
-          description: The bin does not have enough free capacity for this quantity.
+          description: >
+            The bin does not have enough free capacity for this quantity, or
+            the SKU is Hazmat/TemperatureSensitive-classified (ADR 0009) and
+            the target bin's zone fails the placement check (not
+            hazmat-rated, or a temperature-class mismatch), or the
+            facility-layout classification lookup was unavailable for a
+            classified, rule-relevant SKU, or the SKU carries a DOT hazard
+            class (ADR 0010) that is incompatible with another SKU already
+            occupying the target bin (same-bin DOT segregation).
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
-              example:
-                type: https://errors.inventory-storage.warehouse-systems.dev/bin-full
-                title: "Bin is full: capacity exceeded"
-                status: 409
-                detail: "bin is full: capacity exceeded"
-                instance: /stock/stow
+              examples:
+                binFull:
+                  summary: Bin capacity exceeded
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/bin-full
+                    title: "Bin is full: capacity exceeded"
+                    status: 409
+                    detail: "bin is full: capacity exceeded"
+                    instance: /stock/stow
+                hazmatZoneRequired:
+                  summary: Hazmat SKU stowed into a non-hazmat-rated zone
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/hazmat-zone-required
+                    title: Hazmat SKU requires a hazmat-rated zone
+                    status: 409
+                    detail: hazmat sku requires a hazmat-rated zone
+                    instance: /stock/stow
+                temperatureClassMismatch:
+                  summary: TemperatureSensitive SKU stowed into a mismatched zone
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/temperature-class-mismatch
+                    title: Bin temperature class does not match the SKU's required temperature class
+                    status: 409
+                    detail: bin temperature class does not match the sku's required temperature class
+                    instance: /stock/stow
+                locationClassificationUnavailable:
+                  summary: facility-layout lookup unavailable for a classified SKU
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/location-classification-unavailable
+                    title: Location classification lookup unavailable
+                    status: 409
+                    detail: location classification lookup unavailable
+                    instance: /stock/stow
+                hazmatClassIncompatible:
+                  summary: DOT hazard class incompatible with another SKU already in the bin
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/hazmat-class-incompatible
+                    title: DOT hazard class incompatible with another SKU already stowed in this bin
+                    status: 409
+                    detail: dot hazard class incompatible with another sku already stowed in this bin
+                    instance: /stock/stow
         "422":
           description: Quantity present but not a positive number.
           content:
@@ -553,6 +603,129 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /products/{sku}/classification:
+    put:
+      operationId: classifyProduct
+      summary: Register or replace a SKU's product classification
+      description: >
+        Registers or replaces the handling classification for a SKU —
+        SKU-level master data this service owns as source of truth (see
+        ADR 0009), independent of any StockUnit or bin. Idempotent by SKU:
+        classifying an already-classified SKU replaces its prior
+        classification (a legitimate operational action, e.g. an item newly
+        designated hazmat) rather than erroring. handlingTags must be a
+        non-empty, duplicate-free array drawn from the closed enum; when
+        (and only when) handlingTags includes TemperatureSensitive,
+        temperatureClass is required. This classification is consulted by
+        StowStock to enforce hazmat/temperature placement rules at stow
+        time.
+      tags: [Products]
+      parameters:
+        - $ref: "#/components/parameters/Sku"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClassifyProductRequest"
+            example:
+              handlingTags: [Hazmat, TemperatureSensitive]
+              temperatureClass: Frozen
+      responses:
+        "200":
+          description: An existing classification for this SKU was replaced.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductClassification"
+              example:
+                sku: SKU-1
+                handlingTags: [Hazmat, TemperatureSensitive]
+                temperatureClass: Frozen
+        "201":
+          description: A new classification for this SKU was created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductClassification"
+              example:
+                sku: SKU-1
+                handlingTags: [Hazmat, TemperatureSensitive]
+                temperatureClass: Frozen
+        "400":
+          description: >
+            Malformed JSON body, SKU missing/empty, handlingTags empty or
+            containing an unknown/duplicate tag, temperatureClass supplied
+            without TemperatureSensitive, or an unknown temperatureClass
+            value.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                noTags:
+                  summary: No handling tags supplied
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/no-handling-tags
+                    title: Classification requires at least one handling tag
+                    status: 400
+                    detail: classification requires at least one handling tag
+                    instance: /products/SKU-1/classification
+                unknownTag:
+                  summary: Unknown handling tag
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/unknown-handling-tag
+                    title: Unknown handling tag
+                    status: 400
+                    detail: unknown handling tag
+                    instance: /products/SKU-1/classification
+                temperatureClassRequired:
+                  summary: TemperatureSensitive without a temperatureClass
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/temperature-class-required
+                    title: Temperature-sensitive classification requires a temperature class
+                    status: 400
+                    detail: temperature-sensitive classification requires a temperature class
+                    instance: /products/SKU-1/classification
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    get:
+      operationId: getProductClassification
+      summary: Get a SKU's current product classification
+      description: >
+        Returns the currently registered classification for a SKU.
+        Side-effect-free. Unlike GetUsableInventory, an unclassified SKU is
+        a 404, not a zero-value response — there is no meaningful "empty"
+        classification to return.
+      tags: [Products]
+      parameters:
+        - $ref: "#/components/parameters/Sku"
+      responses:
+        "200":
+          description: The SKU's current classification.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductClassification"
+              example:
+                sku: SKU-1
+                handlingTags: [Hazmat]
+        "404":
+          description: No classification is registered for this SKU.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/product-classification-not-found
+                title: Product classification not found
+                status: 404
+                detail: product classification not found
+                instance: /products/SKU-UNKNOWN/classification
+        "500":
+          $ref: "#/components/responses/InternalError"
+
 components:
   parameters:
     ReservationId:
@@ -810,3 +983,73 @@ components:
           type: boolean
           description: True if countedQuantity differed from systemQuantity.
           example: true
+
+    ClassifyProductRequest:
+      type: object
+      required: [handlingTags]
+      properties:
+        handlingTags:
+          type: array
+          description: >
+            Non-empty, duplicate-free set of handling tags from the closed
+            enum. Order is not significant.
+          minItems: 1
+          items:
+            type: string
+            enum: [Hazmat, Fragile, TemperatureSensitive, Oversized, HighValue]
+          example: [Hazmat, TemperatureSensitive]
+        temperatureClass:
+          type: string
+          description: >
+            Required if and only if handlingTags includes
+            TemperatureSensitive; omit/empty otherwise.
+          enum: [Ambient, Chilled, Frozen]
+          example: Frozen
+        dotHazardClass:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 9
+          nullable: true
+          description: >
+            Optional top-level US DOT hazard class (1-9; explosives
+            sub-divisions/compatibility-groups A-L/S are out of scope —
+            see ADR 0010). Meaningful, and settable, only when
+            handlingTags includes Hazmat — but unlike temperatureClass,
+            never REQUIRED by Hazmat: omit/null for a Hazmat
+            classification with no DOT class on file (e.g. one
+            classified before this field existed).
+          example: 3
+
+    ProductClassification:
+      type: object
+      description: >
+        SKU-level master data describing how an item must be handled,
+        independent of any StockUnit or bin. This service owns it as
+        source of truth (ADR 0009). dotHazardClass adds a same-bin DOT
+        segregation check enforced at stow time (ADR 0010).
+      properties:
+        sku:
+          type: string
+          example: SKU-1
+        handlingTags:
+          type: array
+          items:
+            type: string
+            enum: [Hazmat, Fragile, TemperatureSensitive, Oversized, HighValue]
+          example: [Hazmat, TemperatureSensitive]
+        temperatureClass:
+          type: string
+          description: Empty unless handlingTags includes TemperatureSensitive.
+          enum: [Ambient, Chilled, Frozen]
+          example: Frozen
+        dotHazardClass:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 9
+          nullable: true
+          description: >
+            Omitted/null unless handlingTags includes Hazmat AND a DOT
+            hazard class was explicitly recorded (ADR 0010).
+          example: 3

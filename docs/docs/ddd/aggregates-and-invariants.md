@@ -174,6 +174,60 @@ therefore where boundary tests were added explicitly during mutation testing —
 the `result < 0` boundary is the difference between refusing an impossible
 operation and silently inventing stock.
 
+## ProductClassification
+
+**SKU-level master data, independent of any StockUnit or bin.** Added in
+[ADR 0009](/docs/adr/0009-product-classification-as-sku-master-data): this
+service owns product classification as source of truth and enforces
+placement rules against it at stow time. Extended in
+[ADR 0010](/docs/adr/0010-dot-hazard-class-and-same-bin-segregation) with an
+optional US DOT hazard class and a same-bin segregation check.
+
+| Field | Meaning |
+| --- | --- |
+| `sku` | The classified SKU |
+| `handlingTags` | A set drawn from the closed enum `Hazmat`/`Fragile`/`TemperatureSensitive`/`Oversized`/`HighValue` |
+| `temperatureClass` | `Ambient`/`Chilled`/`Frozen` — meaningful, and required, only when `handlingTags` contains `TemperatureSensitive` |
+| `dotHazardClass` | `1`-`9` (US DOT top-level hazard class) — meaningful, but never required, only when `handlingTags` contains `Hazmat`. Zero means unspecified. |
+
+### Invariants
+
+| # | Invariant | Enforcement | Failing-path test |
+| --- | --- | --- | --- |
+| P1 | **A classification requires at least one handling tag.** | `New` returns `ErrNoHandlingTags` | `TestNew_TableDriven/no_tags_rejected` |
+| P2 | **HandlingTag is a closed enum.** | `ParseHandlingTag` / `New` return `ErrUnknownHandlingTag` for anything outside the five named tags | `TestParseHandlingTag/unknown`, `TestNew_TableDriven/unknown_tag_rejected` |
+| P3 | **No duplicate tags — HandlingTags is a set, not a list.** | `New` returns `ErrDuplicateHandlingTag` | `TestNew_TableDriven/duplicate_tag_rejected` |
+| P4 | **TemperatureSensitive requires a valid, non-empty TemperatureClass.** | `New` returns `ErrTemperatureClassRequired` (missing) or `ErrUnknownTemperatureClass` (invalid) | `TestNew_TableDriven/temperature_sensitive_without_class_rejected` |
+| P5 | **Absence of TemperatureSensitive means TemperatureClass must be empty.** | `New` returns `ErrTemperatureClassNotApplicable` | `TestNew_TableDriven/temperature_class_without_temperature_sensitive_tag_rejected` |
+| P6 | **DOTHazardClass, when non-zero, is valid only if Hazmat is present.** | `New` returns `ErrDOTHazardClassNotApplicable` | `TestNew_TableDriven/dot_hazard_class_without_hazmat_tag_rejected` |
+| P7 | **DOTHazardClass, when non-zero, must be in range 1-9.** | `ParseDOTHazardClass` / `New` return `ErrInvalidDOTHazardClass` | `TestNew_TableDriven/dot_hazard_class_out_of_range_rejected` |
+| P8 | **Unlike TemperatureClass, DOTHazardClass is never required by Hazmat — zero is always valid.** | `New` accepts `Hazmat` with `DOTHazardClassUnspecified` | `TestNew_TableDriven/hazmat_alone_succeeds` |
+
+`ProductClassified(sku, tags, temperatureClass, dotHazardClass, occurredAt)`
+is raised on every construction/replacement — see
+[Domain Events](./domain-events.md).
+
+### Same-bin DOT segregation (`product.Incompatible`, `StowStock`)
+
+`internal/domain/product/segregation.go` derives a symmetric 9x9
+class-level incompatibility matrix from 49 CFR §177.848, under four
+documented simplification rules (division/zone collapse to class, `X`/`O`
+both block same-bin storage, Class 1 maximally restrictive, Class 9
+broadly compatible) — see ADR 0010 for the full derivation and rationale.
+`Incompatible(a, b DOTHazardClass) bool` is fail-open for
+`DOTHazardClassUnspecified` on either side.
+
+`StowStock.Execute` enforces this AFTER the ADR 0009 hazmat-zone/
+temperature-class checks: when the incoming SKU carries a non-zero
+`DOTHazardClass`, every other SKU already occupying the target bin is
+checked, purely from this service's own `StockRepo`/
+`ProductClassificationRepo` — no cross-context call. An incompatible
+occupant returns `ErrHazmatClassIncompatible`; an unclassified occupant,
+or one with no `DOTHazardClass` recorded, never blocks the stow.
+
+*Code:* `internal/domain/product.ProductClassification`,
+`internal/domain/product.Incompatible`
+
 ## The four named invariants
 
 `CLAUDE.md` singles out four as the Definition of Done for the context. Each

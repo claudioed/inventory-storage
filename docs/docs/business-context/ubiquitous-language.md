@@ -25,6 +25,37 @@ deliberately no single "SKU balance" aggregate to contend on.
 
 *Code:* `internal/domain/stock.StockUnit`
 
+### ProductClassification
+
+SKU-level master data — independent of any `StockUnit` or `Bin` — describing
+how an item must be handled. Carries a **closed** set of `HandlingTag`s
+(`Hazmat`, `Fragile`, `TemperatureSensitive`, `Oversized`, `HighValue`) and,
+only when `TemperatureSensitive` is present, a required `TemperatureClass`
+(`Ambient`/`Chilled`/`Frozen`). It may also carry an **optional**
+`DOTHazardClass` (1-9, top-level US DOT hazard class only), meaningful only
+when `Hazmat` is present — but unlike `TemperatureClass`, never *required*
+by `Hazmat`, so SKUs classified as `Hazmat` before this field existed
+continue to validate unchanged. This service is the **source of truth** for
+this classification — WMS-tier master data, not derived from or shared with
+any other bounded context.
+
+Unlike `location.LocationType` (an open tag list on a Zone), `HandlingTag` is
+deliberately a **closed enum**: the taxonomy is fixed business vocabulary.
+
+`TemperatureClass` here is a small, deliberate duplication of
+facility-layout's own `Zone.TemperatureClass` concept — bounded contexts do
+not share Go types across repository boundaries; each side names and
+validates the concept in its own ubiquitous language. See
+[ADR 0009](/docs/adr/0009-product-classification-as-sku-master-data).
+
+`DOTHazardClass` grounds a real regulation — 49 CFR §177.848 — with four
+documented study-project simplifications (division/zone collapse to
+top-level class, `X`/`O` both block same-bin storage, Class 1 is maximally
+restrictive, Class 9 is broadly compatible). See
+[ADR 0010](/docs/adr/0010-dot-hazard-class-and-same-bin-segregation).
+
+*Code:* `internal/domain/product.ProductClassification`
+
 ### Bin / Location
 
 A **coded slot**. Under chaotic storage, any SKU may occupy any free bin; the
@@ -112,6 +143,9 @@ Anti-Corruption boundary: order semantics do not leak into the inventory model.
 | `SKU` | Non-empty string identifying a stock keeping unit. Empty is rejected at construction (`ErrEmptySKU`). |
 | `BinId` | Non-empty string identifying a coded slot (`ErrEmptyBinID`). |
 | `Quantity` | A **non-negative** count. Every operation that would drive it negative returns an error rather than clamping — "no negative usable" is enforced at construction *and* on every arithmetic operation. `NewPositiveQuantity` additionally rejects zero, for requests like "reserve nothing." |
+| `HandlingTag` | A closed enum: `Hazmat`, `Fragile`, `TemperatureSensitive`, `Oversized`, `HighValue`. `ParseHandlingTag` rejects anything else (`ErrUnknownHandlingTag`). |
+| `TemperatureClass` | A closed enum: `Ambient`, `Chilled`, `Frozen`. Required and non-empty iff the classification carries `TemperatureSensitive`; empty otherwise. |
+| `DOTHazardClass` | An `int` 1-9 (top-level US DOT hazard class, not a closed enum of named constants). `ParseDOTHazardClass` rejects anything outside 1-9. Meaningful/settable only when `HandlingTags` contains `Hazmat`, but never required by it — zero (`DOTHazardClassUnspecified`) is valid even on a Hazmat classification. See [ADR 0010](/docs/adr/0010-dot-hazard-class-and-same-bin-segregation). |
 
 ## States
 
@@ -149,6 +183,7 @@ directly here:
 | **Reservation / Allocation** | a revocable claim on usable quantity, owned here | WES tier only *observes* the effect via events; it never holds one |
 | **Location** | a coded bin with a capacity | `facility-layout`: a `LocationSlot` in a Site→Area→Zone→Aisle→Bay→Level→Position hierarchy |
 | **Pick** | `ConfirmPick` — the *accounting* consequence of a pick | `fulfillment-execution`: the physical task lifecycle, claim/lease/complete |
+| **TemperatureClass** | a value on this service's own `ProductClassification`, required only for `TemperatureSensitive` SKUs | `facility-layout`: a value on `Zone.TemperatureClass` describing what a physical zone can hold — same name and meaning, deliberately duplicated rather than shared (ADR 0009) |
 
 Do not share a DTO or type across those boundaries. Translate at the
 Anti-Corruption Layer instead.
