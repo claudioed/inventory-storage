@@ -31,6 +31,12 @@ type Deps struct {
 	RevokeReservation *usecases.RevokeReservation
 	// Stock is the read-only query port for the bin-occupancy diagnostic.
 	Stock StockQueries
+	// Reports is the optional client of the inventory-reports REST service.
+	// When non-nil, the curated read-only Inventory Flow & Accuracy report
+	// tool is registered; when nil, that tool is simply not exposed. It is a
+	// narrow port so the analytical read model is reached only through the
+	// reports REST surface, never the analytical database directly (ADR-0011).
+	Reports ReportsClient
 }
 
 // --- check_availability -------------------------------------------------------
@@ -134,6 +140,10 @@ func (d Deps) registerTools(server *mcp.Server, scopeOf func(context.Context) Sc
 		Description: "Revoke a reservation, returning its bound quantity to usable inventory so a failed physical delivery never strands an order. Rejected if the reservation is not found or already revoked.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &destructive, IdempotentHint: notIdempotent},
 	}, d.revokeReservation)
+
+	// Curated read-only analytics report tool, registered only when a reports
+	// client is wired (Deps.Reports != nil).
+	d.registerReportTool(server, scopeOf)
 }
 
 // addTool registers one scope-gated tool. It centralises the cross-cutting
