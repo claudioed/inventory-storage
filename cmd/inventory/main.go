@@ -89,13 +89,14 @@ func run() error {
 			Stock: stockRepo, Locations: locationRepo, Events: publisher, Clock: clock,
 			Classifications: classificationRepo, LocationLookup: locationLookup,
 		},
-		ReserveStock:      &usecases.ReserveStock{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, Metrics: reservationMetrics},
-		RevokeReservation: &usecases.RevokeReservation{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, Metrics: reservationMetrics},
-		ConfirmPick:       &usecases.ConfirmPick{Stock: stockRepo, Locations: locationRepo, Reservations: reservationRepo, Events: publisher, Clock: clock},
-		GetUsable:         &usecases.GetUsable{Stock: stockRepo},
-		RunCycleCount:     &usecases.RunCycleCount{Stock: stockRepo, Events: publisher, Clock: clock},
-		ClassifyProduct:   &usecases.ClassifyProduct{Classifications: classificationRepo, Events: publisher, Clock: clock},
-		Classifications:   classificationRepo,
+		ReserveStock:               &usecases.ReserveStock{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, Metrics: reservationMetrics},
+		RevokeReservation:          &usecases.RevokeReservation{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, Metrics: reservationMetrics},
+		ConfirmPick:                &usecases.ConfirmPick{Stock: stockRepo, Locations: locationRepo, Reservations: reservationRepo, Events: publisher, Clock: clock},
+		GetUsable:                  &usecases.GetUsable{Stock: stockRepo},
+		GetReservationsByDemandRef: &usecases.GetReservationsByDemandRef{Reservations: reservationRepo},
+		RunCycleCount:              &usecases.RunCycleCount{Stock: stockRepo, Events: publisher, Clock: clock},
+		ClassifyProduct:            &usecases.ClassifyProduct{Classifications: classificationRepo, Events: publisher, Clock: clock},
+		Classifications:            classificationRepo,
 	}
 
 	httpServer := &http.Server{

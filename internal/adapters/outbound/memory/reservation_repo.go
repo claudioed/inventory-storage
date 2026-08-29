@@ -36,6 +36,21 @@ func (r *ReservationRepo) FindByID(_ context.Context, id string) (*reservation.R
 	return res, nil
 }
 
+// FindByDemandRef performs a simple linear scan over every reservation held,
+// filtering by demand ref. Suitable for tests/local use; the Postgres
+// adapter uses an indexed query instead.
+func (r *ReservationRepo) FindByDemandRef(_ context.Context, demandRef string) ([]*reservation.Reservation, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var results []*reservation.Reservation
+	for _, res := range r.reservations {
+		if res.DemandRef() == demandRef {
+			results = append(results, res)
+		}
+	}
+	return results, nil
+}
+
 func (r *ReservationRepo) NextID(_ context.Context) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"os"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/cors"
 	"github.com/riandyrn/otelchi"
 	otelchimetric "github.com/riandyrn/otelchi/metric"
 
@@ -20,14 +23,15 @@ import (
 
 // Server holds every use case the HTTP adapter depends on.
 type Server struct {
-	ReceiveStock      *usecases.ReceiveStock
-	StowStock         *usecases.StowStock
-	ReserveStock      *usecases.ReserveStock
-	RevokeReservation *usecases.RevokeReservation
-	ConfirmPick       *usecases.ConfirmPick
-	GetUsable         *usecases.GetUsable
-	RunCycleCount     *usecases.RunCycleCount
-	ClassifyProduct   *usecases.ClassifyProduct
+	ReceiveStock               *usecases.ReceiveStock
+	StowStock                  *usecases.StowStock
+	ReserveStock               *usecases.ReserveStock
+	RevokeReservation          *usecases.RevokeReservation
+	ConfirmPick                *usecases.ConfirmPick
+	GetUsable                  *usecases.GetUsable
+	GetReservationsByDemandRef *usecases.GetReservationsByDemandRef
+	RunCycleCount              *usecases.RunCycleCount
+	ClassifyProduct            *usecases.ClassifyProduct
 	// Classifications backs the read-only GET endpoint. It is the same
 	// port ClassifyProduct writes through; there is no dedicated
 	// "GetProductClassification" use case because the read is a direct,
@@ -39,6 +43,12 @@ type Server struct {
 // DefaultServiceName labels this service's spans and metrics when the caller
 // does not supply one. It matches the OTel resource's service.name.
 const DefaultServiceName = "inventory-storage"
+
+// defaultCORSAllowedOrigins is the local-dev default for CORS_ALLOWED_ORIGINS:
+// the warehouse-console shell (localhost:5173) and this service's own future
+// MFE remote dev origin (localhost:5182). Overridable via the env var
+// (comma-separated) for other environments.
+const defaultCORSAllowedOrigins = "http://localhost:5173,http://localhost:5182"
 
 // NewRouter builds the chi router for every endpoint in CLAUDE.md's REST API.
 // A nil logger defaults to slog.Default(); an empty serviceName defaults to
@@ -67,11 +77,24 @@ func NewRouter(s *Server, logger *slog.Logger, serviceName string) http.Handler 
 	r.Use(otelchimetric.NewServerRequestDuration(metricCfg))
 	r.Use(RequestLogger(logger))
 	r.Use(middleware.Recoverer)
+	// Allows browser SPAs on a different origin (e.g. the warehouse-console
+	// shell, or this service's own MFE remote) to call this API directly.
+	// CORS_ALLOWED_ORIGINS is comma-separated, defaulting to the two local
+	// dev origins. No credentials are needed — auth here is a static
+	// bearer key, not cookies, so the browser doesn't need cross-origin
+	// credentialed requests.
+	r.Use(cors.Handler(cors.Options{
+		AllowedOrigins:   corsAllowedOrigins(),
+		AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete},
+		AllowedHeaders:   []string{"Accept", "Content-Type", "Authorization"},
+		AllowCredentials: false,
+	}))
 
 	r.Get("/healthz", s.handleHealthz)
 	r.Post("/stock/receive", s.handleReceiveStock)
 	r.Post("/stock/stow", s.handleStowStock)
 	r.Post("/reservations", s.handleReserveStock)
+	r.Get("/reservations", s.handleGetReservationsByDemandRef)
 	r.Delete("/reservations/{id}", s.handleRevokeReservation)
 	r.Post("/reservations/{id}/confirm-pick", s.handleConfirmPick)
 	r.Get("/inventory/{sku}/usable", s.handleGetUsable)
@@ -80,6 +103,20 @@ func NewRouter(s *Server, logger *slog.Logger, serviceName string) http.Handler 
 	r.Get("/products/{sku}/classification", s.handleGetProductClassification)
 
 	return r
+}
+
+// corsAllowedOrigins reads CORS_ALLOWED_ORIGINS (comma-separated), falling
+// back to defaultCORSAllowedOrigins for local dev when unset/empty.
+func corsAllowedOrigins() []string {
+	raw := os.Getenv("CORS_ALLOWED_ORIGINS")
+	if raw == "" {
+		raw = defaultCORSAllowedOrigins
+	}
+	origins := strings.Split(raw, ",")
+	for i, o := range origins {
+		origins[i] = strings.TrimSpace(o)
+	}
+	return origins
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
@@ -187,6 +224,30 @@ func (s *Server) handleRevokeReservation(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleGetReservationsByDemandRef backs GET /reservations?demandRef=<ref>.
+// demandRef is required (400 if missing/empty) since this is a lookup-by-key
+// endpoint, not a list-all — there is no meaningful "give me everything"
+// response here.
+func (s *Server) handleGetReservationsByDemandRef(w http.ResponseWriter, r *http.Request) {
+	demandRef := r.URL.Query().Get("demandRef")
+	if demandRef == "" {
+		writeProblem(w, http.StatusBadRequest, problemInfo{"missing-demand-ref", "demandRef query parameter is required"}, "demandRef query parameter must not be empty", r.URL.Path)
+		return
+	}
+
+	reservations, err := s.GetReservationsByDemandRef.Execute(r.Context(), demandRef)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	responses := make([]reservationResponse, 0, len(reservations))
+	for _, res := range reservations {
+		responses = append(responses, toReservationResponse(res))
+	}
+	writeJSON(w, http.StatusOK, responses)
 }
 
 func (s *Server) handleConfirmPick(w http.ResponseWriter, r *http.Request) {
@@ -356,6 +417,7 @@ func toReservationResponse(res *reservation.Reservation) reservationResponse {
 		DemandRef:   res.DemandRef(),
 		Status:      string(res.Status()),
 		Allocations: allocations,
+		CreatedAt:   res.CreatedAt().Format(timeFormat),
 		ExpiresAt:   res.ExpiresAt().Format(timeFormat),
 	}
 }

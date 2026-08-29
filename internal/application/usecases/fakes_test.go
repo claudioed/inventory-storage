@@ -105,11 +105,13 @@ type failingReservationRepo struct {
 	delegate interface {
 		Save(ctx context.Context, r *reservation.Reservation) error
 		FindByID(ctx context.Context, id string) (*reservation.Reservation, error)
+		FindByDemandRef(ctx context.Context, demandRef string) ([]*reservation.Reservation, error)
 		NextID(ctx context.Context) (string, error)
 	}
-	failFindByID bool
-	failSave     bool
-	failNextID   bool
+	failFindByID        bool
+	failFindByDemandRef bool
+	failSave            bool
+	failNextID          bool
 }
 
 func (f *failingReservationRepo) Save(ctx context.Context, r *reservation.Reservation) error {
@@ -124,6 +126,13 @@ func (f *failingReservationRepo) FindByID(ctx context.Context, id string) (*rese
 		return nil, errFake
 	}
 	return f.delegate.FindByID(ctx, id)
+}
+
+func (f *failingReservationRepo) FindByDemandRef(ctx context.Context, demandRef string) ([]*reservation.Reservation, error) {
+	if f.failFindByDemandRef {
+		return nil, errFake
+	}
+	return f.delegate.FindByDemandRef(ctx, demandRef)
 }
 
 func (f *failingReservationRepo) NextID(ctx context.Context) (string, error) {
