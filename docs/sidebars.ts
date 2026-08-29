@@ -81,6 +81,7 @@ const sidebars: SidebarsConfig = {
         'adr/0009-product-classification-as-sku-master-data',
         'adr/0010-dot-hazard-class-and-same-bin-segregation',
         'adr/0011-analytical-data-product',
+        'adr/0012-adopt-mfe-console-architecture',
       ],
     },
   ],
