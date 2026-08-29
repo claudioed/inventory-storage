@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"os"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/cors"
 	"github.com/riandyrn/otelchi"
 	otelchimetric "github.com/riandyrn/otelchi/metric"
 
@@ -41,6 +44,12 @@ type Server struct {
 // does not supply one. It matches the OTel resource's service.name.
 const DefaultServiceName = "inventory-storage"
 
+// defaultCORSAllowedOrigins is the local-dev default for CORS_ALLOWED_ORIGINS:
+// the warehouse-console shell (localhost:5173) and this service's own future
+// MFE remote dev origin (localhost:5182). Overridable via the env var
+// (comma-separated) for other environments.
+const defaultCORSAllowedOrigins = "http://localhost:5173,http://localhost:5182"
+
 // NewRouter builds the chi router for every endpoint in CLAUDE.md's REST API.
 // A nil logger defaults to slog.Default(); an empty serviceName defaults to
 // DefaultServiceName.
@@ -68,6 +77,18 @@ func NewRouter(s *Server, logger *slog.Logger, serviceName string) http.Handler 
 	r.Use(otelchimetric.NewServerRequestDuration(metricCfg))
 	r.Use(RequestLogger(logger))
 	r.Use(middleware.Recoverer)
+	// Allows browser SPAs on a different origin (e.g. the warehouse-console
+	// shell, or this service's own MFE remote) to call this API directly.
+	// CORS_ALLOWED_ORIGINS is comma-separated, defaulting to the two local
+	// dev origins. No credentials are needed — auth here is a static
+	// bearer key, not cookies, so the browser doesn't need cross-origin
+	// credentialed requests.
+	r.Use(cors.Handler(cors.Options{
+		AllowedOrigins:   corsAllowedOrigins(),
+		AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete},
+		AllowedHeaders:   []string{"Accept", "Content-Type", "Authorization"},
+		AllowCredentials: false,
+	}))
 
 	r.Get("/healthz", s.handleHealthz)
 	r.Post("/stock/receive", s.handleReceiveStock)
@@ -82,6 +103,20 @@ func NewRouter(s *Server, logger *slog.Logger, serviceName string) http.Handler 
 	r.Get("/products/{sku}/classification", s.handleGetProductClassification)
 
 	return r
+}
+
+// corsAllowedOrigins reads CORS_ALLOWED_ORIGINS (comma-separated), falling
+// back to defaultCORSAllowedOrigins for local dev when unset/empty.
+func corsAllowedOrigins() []string {
+	raw := os.Getenv("CORS_ALLOWED_ORIGINS")
+	if raw == "" {
+		raw = defaultCORSAllowedOrigins
+	}
+	origins := strings.Split(raw, ",")
+	for i, o := range origins {
+		origins[i] = strings.TrimSpace(o)
+	}
+	return origins
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {

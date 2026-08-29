@@ -87,6 +87,60 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
+// CORS is required for the browser SPAs that call this API directly (the
+// warehouse-console shell and this service's own future MFE remote). The
+// default allowed origins cover local dev; CORS_ALLOWED_ORIGINS overrides
+// them for other environments. No credentials are needed (static bearer
+// key auth, not cookies).
+func TestCORS_Preflight_AllowsDefaultOrigin(t *testing.T) {
+	ts := newTestServer()
+	req := httptest.NewRequest(http.MethodOptions, "/reservations", nil)
+	req.Header.Set("Origin", "http://localhost:5173")
+	req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	rec := httptest.NewRecorder()
+	ts.handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent && rec.Code != http.StatusOK {
+		t.Fatalf("expected a successful preflight response, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:5173" {
+		t.Fatalf("expected Access-Control-Allow-Origin=http://localhost:5173, got %q", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "" {
+		t.Fatalf("expected no Access-Control-Allow-Credentials header (no cookie auth), got %q", got)
+	}
+}
+
+// A second default origin (this service's own future MFE remote dev
+// origin) is allowed too, alongside the console shell.
+func TestCORS_Preflight_AllowsSecondDefaultOrigin(t *testing.T) {
+	ts := newTestServer()
+	req := httptest.NewRequest(http.MethodOptions, "/reservations", nil)
+	req.Header.Set("Origin", "http://localhost:5182")
+	req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	rec := httptest.NewRecorder()
+	ts.handler.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:5182" {
+		t.Fatalf("expected Access-Control-Allow-Origin=http://localhost:5182, got %q", got)
+	}
+}
+
+// An origin outside the allowed set gets no CORS headers, so the browser
+// still blocks it — this proves the allowlist is enforced, not wide open.
+func TestCORS_Preflight_RejectsUnknownOrigin(t *testing.T) {
+	ts := newTestServer()
+	req := httptest.NewRequest(http.MethodOptions, "/reservations", nil)
+	req.Header.Set("Origin", "http://evil.example.com")
+	req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	rec := httptest.NewRecorder()
+	ts.handler.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("expected no Access-Control-Allow-Origin for an unknown origin, got %q", got)
+	}
+}
+
 func TestReceiveStock_Endpoint(t *testing.T) {
 	ts := newTestServer()
 	rec := ts.do(t, http.MethodPost, "/stock/receive", map[string]any{"sku": "SKU-1", "quantity": 10})
