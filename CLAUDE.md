@@ -135,6 +135,7 @@ DiscrepancyDetected, ProductClassified.
 - POST /stock/receive                        -> ReceiveStock
 - POST /stock/stow                           -> StowStock
 - POST /reservations                         -> ReserveStock
+- GET  /reservations?demandRef=              -> GetReservationsByDemandRef
 - DELETE /reservations/{id}                  -> RevokeReservation
 - POST /reservations/{id}/confirm-pick       -> ConfirmPick
 - GET  /inventory/{sku}/usable               -> GetUsable
@@ -144,6 +145,31 @@ DiscrepancyDetected, ProductClassified.
 - GET  /healthz
 
 JSON DTOs live in the http adapter; never leak domain structs.
+
+`GET /reservations?demandRef=` is the read side backing the fleet's
+cross-service Order Lifecycle console screen — see ADR-0002 in
+`warehouse-ops-agent`'s docs and this repo's own adoption-record ADR
+under `docs/docs/adr/`. It returns every Reservation ever created against
+a caller-supplied `demandRef` (array, since a demandRef can have multiple
+reservations across its lifetime — a revoke followed by a retry), never
+404s on an unknown demandRef (200 + empty array instead), and is
+side-effect-free.
+
+CORS middleware (`go-chi/cors`) is enabled on every route, allowing
+`CORS_ALLOWED_ORIGINS` (env, default `http://localhost:5173,http://localhost:5182`
+— the `warehouse-console` shell and this service's own `inventory-mfe`
+remote).
+
+## Frontend micro-frontend remote (`web/`)
+
+This repo also owns `web/`: `inventory-mfe`, a Vite + React Module
+Federation **remote** consumed by the separate `warehouse-console` shell
+repo. It is a plain browser client of this service's own REST API above
+(SKU/usable-inventory lookup, reservation-by-demandRef search) — nothing
+in `web/` talks to any other bounded context, and nothing in `internal/`
+knows `web/` exists. `web/` has its own `package.json`, build, and dev
+server (`:5182`); it does not participate in this repo's Go quality gate
+and is not part of the Go module.
 
 ## Tech & standards
 
