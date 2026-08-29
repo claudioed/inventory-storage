@@ -1,0 +1,71 @@
+---
+id: get-reservations-by-demand-ref
+title: "Look up every reservation for a demand reference"
+description: "Returns every Reservation ever created against a caller-supplied demandRef (an external system's order+line reference, e.g. from order-management). A demandRef can have MULTIPLE reservations across its lifetime — a reservation that was revoked, followed by a successful retry — so this returns an array, not a single resource; an unknown demandRef returns 200 with an empty array, not 404. This is the read side backing a cross-service order-lifecycle console screen that needs to answer 'what did inventory-storage do for order X, line N'. Side-effect-free."
+sidebar_label: "Look up every reservation for a demand reference"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "get api-method"
+info_path: docs/api-reference/rest/inventory-storage-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Look up every reservation for a demand reference"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"get"}
+  path={"/reservations"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+Returns every Reservation ever created against a caller-supplied demandRef (an external system's order+line reference, e.g. from order-management). A demandRef can have MULTIPLE reservations across its lifetime — a reservation that was revoked, followed by a successful retry — so this returns an array, not a single resource; an unknown demandRef returns 200 with an empty array, not 404. This is the read side backing a cross-service order-lifecycle console screen that needs to answer "what did inventory-storage do for order X, line N". Side-effect-free.
+
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./get-reservations-by-demand-ref.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./get-reservations-by-demand-ref.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./get-reservations-by-demand-ref.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

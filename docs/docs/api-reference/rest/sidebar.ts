@@ -38,6 +38,12 @@ const sidebar: SidebarsConfig = {
       items: [
         {
           type: "doc",
+          id: "api-reference/rest/get-reservations-by-demand-ref",
+          label: "Look up every reservation for a demand reference",
+          className: "api-method get",
+        },
+        {
+          type: "doc",
           id: "api-reference/rest/reserve-stock",
           label: "Create a revocable reservation against usable inventory",
           className: "api-method post",
@@ -85,6 +91,28 @@ const sidebar: SidebarsConfig = {
           id: "api-reference/rest/run-cycle-count",
           label: "Record a physical cycle count for a bin",
           className: "api-method post",
+        },
+      ],
+    },
+    {
+      type: "category",
+      label: "Products",
+      link: {
+        type: "doc",
+        id: "api-reference/rest/products",
+      },
+      items: [
+        {
+          type: "doc",
+          id: "api-reference/rest/classify-product",
+          label: "Register or replace a SKU's product classification",
+          className: "api-method put",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/get-product-classification",
+          label: "Get a SKU's current product classification",
+          className: "api-method get",
         },
       ],
     },
