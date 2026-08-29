@@ -7,8 +7,12 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/riandyrn/otelchi"
+	otelchimetric "github.com/riandyrn/otelchi/metric"
 
+	"github.com/claudioed/inventory-storage/internal/application/ports"
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
+	"github.com/claudioed/inventory-storage/internal/domain/product"
 	"github.com/claudioed/inventory-storage/internal/domain/reservation"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 	"github.com/claudioed/inventory-storage/internal/domain/stock"
@@ -23,17 +27,44 @@ type Server struct {
 	ConfirmPick       *usecases.ConfirmPick
 	GetUsable         *usecases.GetUsable
 	RunCycleCount     *usecases.RunCycleCount
+	ClassifyProduct   *usecases.ClassifyProduct
+	// Classifications backs the read-only GET endpoint. It is the same
+	// port ClassifyProduct writes through; there is no dedicated
+	// "GetProductClassification" use case because the read is a direct,
+	// no-invariant repo lookup — consistent with how GetUsable is the
+	// only use case that reads without also writing.
+	Classifications ports.ProductClassificationRepo
 }
 
+// DefaultServiceName labels this service's spans and metrics when the caller
+// does not supply one. It matches the OTel resource's service.name.
+const DefaultServiceName = "inventory-storage"
+
 // NewRouter builds the chi router for every endpoint in CLAUDE.md's REST API.
-// A nil logger defaults to slog.Default().
-func NewRouter(s *Server, logger *slog.Logger) http.Handler {
+// A nil logger defaults to slog.Default(); an empty serviceName defaults to
+// DefaultServiceName.
+//
+// Middleware order matters here. otelchi runs before RequestLogger so the
+// request context already carries a span by the time a line is logged, which
+// is what lets the telemetry slog handler stamp trace_id/span_id onto it.
+// WithChiRoutes resolves the route pattern up front, so spans are named
+// "/reservations/{id}" rather than one distinct name per reservation id.
+func NewRouter(s *Server, logger *slog.Logger, serviceName string) http.Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	if serviceName == "" {
+		serviceName = DefaultServiceName
+	}
 
 	r := chi.NewRouter()
+	metricCfg := otelchimetric.NewBaseConfig(serviceName)
+
 	r.Use(middleware.RequestID)
+	r.Use(otelchi.Middleware(serviceName, otelchi.WithChiRoutes(r)))
+	// Emits http.server.request.duration (seconds) per OTel HTTP semantic
+	// conventions; no hand-rolled histogram needed.
+	r.Use(otelchimetric.NewServerRequestDuration(metricCfg))
 	r.Use(RequestLogger(logger))
 	r.Use(middleware.Recoverer)
 
@@ -45,6 +76,8 @@ func NewRouter(s *Server, logger *slog.Logger) http.Handler {
 	r.Post("/reservations/{id}/confirm-pick", s.handleConfirmPick)
 	r.Get("/inventory/{sku}/usable", s.handleGetUsable)
 	r.Post("/bins/{binId}/cycle-count", s.handleRunCycleCount)
+	r.Put("/products/{sku}/classification", s.handleClassifyProduct)
+	r.Get("/products/{sku}/classification", s.handleGetProductClassification)
 
 	return r
 }
@@ -214,6 +247,90 @@ func (s *Server) handleRunCycleCount(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleClassifyProduct(w http.ResponseWriter, r *http.Request) {
+	skuParam := chi.URLParam(r, "sku")
+	sku, err := shared.NewSKU(skuParam)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	var req classifyProductRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+
+	tags := make([]product.HandlingTag, 0, len(req.HandlingTags))
+	for _, raw := range req.HandlingTags {
+		tag, err := product.ParseHandlingTag(raw)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		tags = append(tags, tag)
+	}
+
+	var temperatureClass product.TemperatureClass
+	if req.TemperatureClass != "" {
+		temperatureClass, err = product.ParseTemperatureClass(req.TemperatureClass)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+	}
+
+	var dotHazardClass product.DOTHazardClass
+	if req.DOTHazardClass != nil {
+		dotHazardClass, err = product.ParseDOTHazardClass(*req.DOTHazardClass)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+	}
+
+	existing, err := s.Classifications.FindBySKU(r.Context(), sku)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	c, err := s.ClassifyProduct.Execute(r.Context(), sku, tags, temperatureClass, dotHazardClass)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	// 201 Created for a first-time classification (this SKU had none
+	// before this call), 200 OK when replacing an existing one — the same
+	// create-vs-replace distinction PUT semantics call for.
+	status := http.StatusOK
+	if existing == nil {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, toProductClassificationResponse(c))
+}
+
+func (s *Server) handleGetProductClassification(w http.ResponseWriter, r *http.Request) {
+	skuParam := chi.URLParam(r, "sku")
+	sku, err := shared.NewSKU(skuParam)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	c, err := s.Classifications.FindBySKU(r.Context(), sku)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if c == nil {
+		writeError(w, r, usecases.ErrProductClassificationNotFound)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, toProductClassificationResponse(c))
+}
+
 const timeFormat = "2006-01-02T15:04:05Z07:00"
 
 func toStockUnitResponse(u *stock.StockUnit) stockUnitResponse {
@@ -240,6 +357,25 @@ func toReservationResponse(res *reservation.Reservation) reservationResponse {
 		Status:      string(res.Status()),
 		Allocations: allocations,
 		ExpiresAt:   res.ExpiresAt().Format(timeFormat),
+	}
+}
+
+func toProductClassificationResponse(c *product.ProductClassification) productClassificationResponse {
+	tags := c.HandlingTags()
+	handlingTags := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		handlingTags = append(handlingTags, string(tag))
+	}
+	var dotHazardClass *int
+	if c.DOTHazardClass() != product.DOTHazardClassUnspecified {
+		v := int(c.DOTHazardClass())
+		dotHazardClass = &v
+	}
+	return productClassificationResponse{
+		SKU:              c.SKU().String(),
+		HandlingTags:     handlingTags,
+		TemperatureClass: string(c.TemperatureClass()),
+		DOTHazardClass:   dotHazardClass,
 	}
 }
 

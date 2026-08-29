@@ -29,10 +29,13 @@ func RequestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 				"request_id", middleware.GetReqID(r.Context()),
 			}
 
+			// *Context variants, not the bare ones: the request context is
+			// what carries the active span, and the telemetry slog handler
+			// reads trace_id/span_id off it.
 			if ww.Status() >= http.StatusInternalServerError {
-				logger.Error("http request", attrs...)
+				logger.ErrorContext(r.Context(), "http request", attrs...)
 			} else {
-				logger.Info("http request", attrs...)
+				logger.InfoContext(r.Context(), "http request", attrs...)
 			}
 		})
 	}

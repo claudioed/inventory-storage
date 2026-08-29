@@ -60,6 +60,10 @@ autoscaling:
   maxReplicas: 5
   targetCPUUtilizationPercentage: 80
 
+# deployment.environment.name on every span, metric and log this service
+# exports. Set per-cluster (local / staging / production).
+environment: "local"
+
 # Falls back to in-memory adapters + log-only event publishing when
 # database.url / kafka.enabled are left empty, same as running the binary
 # locally with no env vars set.
@@ -67,6 +71,7 @@ config:
   httpAddr: ":8080"
   eventPublisher: "log"   # "log" or "kafka"
   migrationsPath: "migrations"
+  logLevel: "info"        # debug | info | warn | error
 
 database:
   url: ""
@@ -78,6 +83,15 @@ database:
 kafka:
   enabled: false
   brokers: "kafka:9092"
+
+# OpenTelemetry traces + metrics, pushed over OTLP/gRPC to a Collector. The
+# endpoint below is the in-cluster Collector Service in the warehouse-infra
+# kind cluster. Export is non-blocking, so a Collector that is down costs
+# telemetry and nothing else — but otel.enabled=false skips the env entirely.
+otel:
+  enabled: true
+  endpoint: "otel-collector.observability.svc.cluster.local:4317"
+  serviceName: "inventory-storage"
 
 extraEnv: []
 
