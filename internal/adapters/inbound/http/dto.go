@@ -47,6 +47,7 @@ type reservationResponse struct {
 	DemandRef   string               `json:"demandRef"`
 	Status      string               `json:"status"`
 	Allocations []allocationResponse `json:"allocations"`
+	CreatedAt   string               `json:"createdAt"`
 	ExpiresAt   string               `json:"expiresAt"`
 }
 

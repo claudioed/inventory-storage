@@ -33,6 +33,14 @@ type LocationRepo interface {
 type ReservationRepo interface {
 	Save(ctx context.Context, r *reservation.Reservation) error
 	FindByID(ctx context.Context, id string) (*reservation.Reservation, error)
+	// FindByDemandRef returns every Reservation ever created against the
+	// given demandRef (the external system's order+line reference, e.g.
+	// from order-management). A demandRef can have MULTIPLE reservations
+	// across its lifetime — a revoked reservation followed by a
+	// successful retry, for instance — so this returns a slice, not a
+	// single result. An unknown demandRef returns an empty slice, not an
+	// error. Order is not guaranteed by this interface.
+	FindByDemandRef(ctx context.Context, demandRef string) ([]*reservation.Reservation, error)
 	NextID(ctx context.Context) (string, error)
 }
 

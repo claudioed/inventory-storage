@@ -94,3 +94,69 @@ func (r *ReservationRepo) FindByID(ctx context.Context, id string) (*reservation
 func (r *ReservationRepo) NextID(_ context.Context) (string, error) {
 	return "res-" + uuid.NewString(), nil
 }
+
+// FindByDemandRef returns every reservation ever created against the given
+// demandRef, ordered by created_at ascending so the caller sees them in the
+// order they occurred (revoked-then-retried demand histories read
+// naturally). Mirrors FindByID's scan/hydration pattern, just applied
+// row-by-row instead of to a single Scan.
+func (r *ReservationRepo) FindByDemandRef(ctx context.Context, demandRef string) ([]*reservation.Reservation, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, sku, quantity, status, created_at, expires_at
+		FROM reservations WHERE demand_ref = $1
+		ORDER BY created_at ASC
+	`, demandRef)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type base struct {
+		id                   string
+		sku, status          string
+		quantity             int
+		createdAt, expiresAt time.Time
+	}
+	var bases []base
+	for rows.Next() {
+		var b base
+		if err := rows.Scan(&b.id, &b.sku, &b.quantity, &b.status, &b.createdAt, &b.expiresAt); err != nil {
+			return nil, err
+		}
+		bases = append(bases, b)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	results := make([]*reservation.Reservation, 0, len(bases))
+	for _, b := range bases {
+		allocRows, err := r.pool.Query(ctx, `SELECT stock_unit_id, quantity FROM reservation_allocations WHERE reservation_id = $1`, b.id)
+		if err != nil {
+			return nil, err
+		}
+
+		var allocations []reservation.Allocation
+		for allocRows.Next() {
+			var stockUnitID string
+			var allocQty int
+			if err := allocRows.Scan(&stockUnitID, &allocQty); err != nil {
+				allocRows.Close()
+				return nil, err
+			}
+			q, _ := shared.NewQuantity(allocQty)
+			allocations = append(allocations, reservation.Allocation{StockUnitID: stockUnitID, Quantity: q})
+		}
+		allocErr := allocRows.Err()
+		allocRows.Close()
+		if allocErr != nil {
+			return nil, allocErr
+		}
+
+		skuVO, _ := shared.NewSKU(b.sku)
+		qty, _ := shared.NewQuantity(b.quantity)
+		results = append(results, reservation.Rehydrate(b.id, skuVO, qty, demandRef, allocations, reservation.Status(b.status), b.createdAt, b.expiresAt))
+	}
+
+	return results, nil
+}
