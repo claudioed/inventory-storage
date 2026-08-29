@@ -295,6 +295,69 @@ paths:
           $ref: "#/components/responses/InternalError"
 
   /reservations:
+    get:
+      operationId: getReservationsByDemandRef
+      summary: Look up every reservation for a demand reference
+      description: >
+        Returns every Reservation ever created against a caller-supplied
+        demandRef (an external system's order+line reference, e.g. from
+        order-management). A demandRef can have MULTIPLE reservations
+        across its lifetime — a reservation that was revoked, followed by
+        a successful retry — so this returns an array, not a single
+        resource; an unknown demandRef returns 200 with an empty array,
+        not 404. This is the read side backing a cross-service
+        order-lifecycle console screen that needs to answer "what did
+        inventory-storage do for order X, line N". Side-effect-free.
+      tags: [Reservations]
+      parameters:
+        - $ref: "#/components/parameters/DemandRef"
+      responses:
+        "200":
+          description: >
+            Every reservation created against this demandRef (possibly
+            empty), in this service's default order.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Reservation"
+              example:
+                - id: res-a1b2c3d4-0000-0000-0000-000000000001
+                  sku: SKU-1
+                  quantity: 6
+                  demandRef: order-42
+                  status: REVOKED
+                  allocations:
+                    - stockUnitId: su-164710cb-5e14-400b-849c-ed94d8256c6b
+                      quantity: 6
+                  createdAt: "2026-08-22T14:00:00Z"
+                  expiresAt: "2026-08-22T14:50:00Z"
+                - id: res-a1b2c3d4-0000-0000-0000-000000000002
+                  sku: SKU-1
+                  quantity: 6
+                  demandRef: order-42
+                  status: ACTIVE
+                  allocations:
+                    - stockUnitId: su-2b6e7e5b-0000-0000-0000-000000000002
+                      quantity: 6
+                  createdAt: "2026-08-22T14:05:00Z"
+                  expiresAt: "2026-08-22T14:55:00Z"
+        "400":
+          description: The demandRef query parameter is missing or empty.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/missing-demand-ref
+                title: demandRef query parameter is required
+                status: 400
+                detail: demandRef query parameter must not be empty
+                instance: /reservations
+        "500":
+          $ref: "#/components/responses/InternalError"
+
     post:
       operationId: reserveStock
       summary: Create a revocable reservation against usable inventory
@@ -344,6 +407,7 @@ paths:
                 allocations:
                   - stockUnitId: su-164710cb-5e14-400b-849c-ed94d8256c6b
                     quantity: 6
+                createdAt: "2026-08-22T14:20:00Z"
                 expiresAt: "2026-08-22T14:50:00Z"
         "400":
           description: Malformed JSON body, or SKU missing/empty.
@@ -744,6 +808,17 @@ components:
       schema:
         type: string
         example: SKU-1
+    DemandRef:
+      name: demandRef
+      in: query
+      required: true
+      description: >
+        The caller-supplied demand reference to look reservations up by
+        (e.g. an external order+line reference). Required — there is no
+        list-all semantics for this endpoint.
+      schema:
+        type: string
+        example: order-42
     BinId:
       name: binId
       in: path
@@ -935,6 +1010,11 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Allocation"
+        createdAt:
+          type: string
+          format: date-time
+          description: Timestamp this reservation was created, RFC 3339.
+          example: "2026-08-22T14:20:00Z"
         expiresAt:
           type: string
           format: date-time
