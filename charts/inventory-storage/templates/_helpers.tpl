@@ -69,3 +69,28 @@ Name of the Secret holding DATABASE_URL, when the chart creates its own.
 {{- include "inventory-storage.fullname" . }}-database
 {{- end }}
 {{- end }}
+
+{{/*
+Fully qualified name of the analytics projector deployment (ADR-0011).
+*/}}
+{{- define "inventory-storage.projectorFullname" -}}
+{{- include "inventory-storage.fullname" . }}-projector
+{{- end }}
+
+{{/*
+Fully qualified name of the analytics reports deployment/service (ADR-0011).
+*/}}
+{{- define "inventory-storage.reportsFullname" -}}
+{{- include "inventory-storage.fullname" . }}-reports
+{{- end }}
+
+{{/*
+Name of the Secret holding the analytics DSNs, when the chart creates its own.
+*/}}
+{{- define "inventory-storage.analyticsSecretName" -}}
+{{- if .Values.analytics.database.existingSecret }}
+{{- .Values.analytics.database.existingSecret }}
+{{- else }}
+{{- include "inventory-storage.fullname" . }}-analytics
+{{- end }}
+{{- end }}
