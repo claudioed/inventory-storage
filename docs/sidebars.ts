@@ -82,6 +82,7 @@ const sidebars: SidebarsConfig = {
         'adr/0010-dot-hazard-class-and-same-bin-segregation',
         'adr/0011-analytical-data-product',
         'adr/0012-adopt-mfe-console-architecture',
+        'adr/0013-standard-metrics-convention',
       ],
     },
   ],
