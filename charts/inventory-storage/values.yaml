@@ -46,6 +46,24 @@ ingress:
           pathType: Prefix
   tls: []
 
+# Gateway API HTTPRoute — additive, disabled-by-default alternative to the
+# Ingress above. Chart-driven equivalent of the raw kubectl HTTPRoute proven
+# live against Kong's Ingress Controller in warehouse-infra's
+# fulfillment-execution pilot (Kong routes HTTPRoute traffic once its
+# GatewayClass carries konghq.com/gatewayclass-unmanaged: "true"). Leaving
+# this disabled makes it a strict no-op; set gatewayApi.enabled=true to
+# switch this service from Ingress to HTTPRoute.
+gatewayApi:
+  enabled: false
+  parentRefs:
+    - name: ""
+      namespace: ""
+      sectionName: "http"
+  hosts:
+    - path: /
+      pathType: PathPrefix
+  stripPath: true
+
 resources:
   limits:
     cpu: 500m
