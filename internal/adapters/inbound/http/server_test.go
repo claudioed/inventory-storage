@@ -33,15 +33,16 @@ func newTestServer() testServer {
 	clock := memory.NewFixedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 
 	s := &inboundhttp.Server{
-		ReceiveStock:      &usecases.ReceiveStock{Events: publisher, Clock: clock},
-		StowStock:         &usecases.StowStock{Stock: stockRepo, Locations: locationRepo, Events: publisher, Clock: clock},
-		ReserveStock:      &usecases.ReserveStock{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock},
-		RevokeReservation: &usecases.RevokeReservation{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock},
-		ConfirmPick:       &usecases.ConfirmPick{Stock: stockRepo, Locations: locationRepo, Reservations: reservationRepo, Events: publisher, Clock: clock},
-		GetUsable:         &usecases.GetUsable{Stock: stockRepo},
-		RunCycleCount:     &usecases.RunCycleCount{Stock: stockRepo, Events: publisher, Clock: clock},
-		ClassifyProduct:   &usecases.ClassifyProduct{Classifications: classificationRepo, Events: publisher, Clock: clock},
-		Classifications:   classificationRepo,
+		ReceiveStock:               &usecases.ReceiveStock{Events: publisher, Clock: clock},
+		StowStock:                  &usecases.StowStock{Stock: stockRepo, Locations: locationRepo, Events: publisher, Clock: clock},
+		ReserveStock:               &usecases.ReserveStock{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock},
+		RevokeReservation:          &usecases.RevokeReservation{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock},
+		ConfirmPick:                &usecases.ConfirmPick{Stock: stockRepo, Locations: locationRepo, Reservations: reservationRepo, Events: publisher, Clock: clock},
+		GetUsable:                  &usecases.GetUsable{Stock: stockRepo},
+		GetReservationsByDemandRef: &usecases.GetReservationsByDemandRef{Reservations: reservationRepo},
+		RunCycleCount:              &usecases.RunCycleCount{Stock: stockRepo, Events: publisher, Clock: clock},
+		ClassifyProduct:            &usecases.ClassifyProduct{Classifications: classificationRepo, Events: publisher, Clock: clock},
+		Classifications:            classificationRepo,
 	}
 
 	return testServer{handler: inboundhttp.NewRouter(s, nil, ""), stock: stockRepo, locations: locationRepo}
@@ -83,6 +84,60 @@ func TestHealthz(t *testing.T) {
 	rec := ts.do(t, http.MethodGet, "/healthz", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
+// CORS is required for the browser SPAs that call this API directly (the
+// warehouse-console shell and this service's own future MFE remote). The
+// default allowed origins cover local dev; CORS_ALLOWED_ORIGINS overrides
+// them for other environments. No credentials are needed (static bearer
+// key auth, not cookies).
+func TestCORS_Preflight_AllowsDefaultOrigin(t *testing.T) {
+	ts := newTestServer()
+	req := httptest.NewRequest(http.MethodOptions, "/reservations", nil)
+	req.Header.Set("Origin", "http://localhost:5173")
+	req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	rec := httptest.NewRecorder()
+	ts.handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent && rec.Code != http.StatusOK {
+		t.Fatalf("expected a successful preflight response, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:5173" {
+		t.Fatalf("expected Access-Control-Allow-Origin=http://localhost:5173, got %q", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "" {
+		t.Fatalf("expected no Access-Control-Allow-Credentials header (no cookie auth), got %q", got)
+	}
+}
+
+// A second default origin (this service's own future MFE remote dev
+// origin) is allowed too, alongside the console shell.
+func TestCORS_Preflight_AllowsSecondDefaultOrigin(t *testing.T) {
+	ts := newTestServer()
+	req := httptest.NewRequest(http.MethodOptions, "/reservations", nil)
+	req.Header.Set("Origin", "http://localhost:5182")
+	req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	rec := httptest.NewRecorder()
+	ts.handler.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:5182" {
+		t.Fatalf("expected Access-Control-Allow-Origin=http://localhost:5182, got %q", got)
+	}
+}
+
+// An origin outside the allowed set gets no CORS headers, so the browser
+// still blocks it — this proves the allowlist is enforced, not wide open.
+func TestCORS_Preflight_RejectsUnknownOrigin(t *testing.T) {
+	ts := newTestServer()
+	req := httptest.NewRequest(http.MethodOptions, "/reservations", nil)
+	req.Header.Set("Origin", "http://evil.example.com")
+	req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	rec := httptest.NewRecorder()
+	ts.handler.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("expected no Access-Control-Allow-Origin for an unknown origin, got %q", got)
 	}
 }
 
@@ -161,6 +216,123 @@ func TestReservationLifecycle_Endpoints(t *testing.T) {
 	confirmRec := ts.do(t, http.MethodPost, "/reservations/"+reserved.ID+"/confirm-pick", nil)
 	if confirmRec.Code != http.StatusNoContent {
 		t.Fatalf("expected 204, got %d: %s", confirmRec.Code, confirmRec.Body.String())
+	}
+}
+
+// GET /reservations?demandRef= end to end: create a reservation, look it up
+// by its demandRef, and confirm the response DTO round-trips id/sku/
+// quantity/demandRef/status/allocations/createdAt/expiresAt.
+func TestGetReservationsByDemandRef_Endpoint_Found(t *testing.T) {
+	ts := newTestServer()
+	ts.seedBin(t, "A-1-1", 10)
+	ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": 10, "binId": "A-1-1"})
+
+	reserveRec := ts.do(t, http.MethodPost, "/reservations", map[string]any{"sku": "SKU-1", "quantity": 6, "demandRef": "order-42-line-1"})
+	if reserveRec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", reserveRec.Code, reserveRec.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(reserveRec.Body.Bytes(), &created)
+
+	rec := ts.do(t, http.MethodGet, "/reservations?demandRef=order-42-line-1", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body []struct {
+		ID          string `json:"id"`
+		SKU         string `json:"sku"`
+		Quantity    int    `json:"quantity"`
+		DemandRef   string `json:"demandRef"`
+		Status      string `json:"status"`
+		Allocations []struct {
+			StockUnitID string `json:"stockUnitId"`
+			Quantity    int    `json:"quantity"`
+		} `json:"allocations"`
+		CreatedAt string `json:"createdAt"`
+		ExpiresAt string `json:"expiresAt"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unexpected error decoding response: %v", err)
+	}
+	if len(body) != 1 {
+		t.Fatalf("expected 1 reservation, got %d", len(body))
+	}
+	got := body[0]
+	if got.ID != created.ID || got.SKU != "SKU-1" || got.Quantity != 6 || got.DemandRef != "order-42-line-1" || got.Status != "ACTIVE" {
+		t.Fatalf("unexpected reservation in response: %+v", got)
+	}
+	if len(got.Allocations) != 1 || got.CreatedAt == "" || got.ExpiresAt == "" {
+		t.Fatalf("expected allocations/createdAt/expiresAt populated, got %+v", got)
+	}
+}
+
+// An unknown demandRef is a 200 with an empty array, not a 404 — there is
+// no single "resource" being looked up by id, just a filtered collection
+// that may legitimately be empty.
+func TestGetReservationsByDemandRef_Endpoint_NotFound_ReturnsEmptyArray(t *testing.T) {
+	ts := newTestServer()
+	rec := ts.do(t, http.MethodGet, "/reservations?demandRef=does-not-exist", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unexpected error decoding response: %v", err)
+	}
+	if len(body) != 0 {
+		t.Fatalf("expected empty array, got %d entries", len(body))
+	}
+}
+
+// The demandRef query parameter is required: omitting it is a 400, matching
+// this repo's RFC 7807 validation-error response shape.
+func TestGetReservationsByDemandRef_Endpoint_MissingParam_Rejected(t *testing.T) {
+	ts := newTestServer()
+	rec := ts.do(t, http.MethodGet, "/reservations", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertProblemDetails(t, rec, http.StatusBadRequest, "missing-demand-ref", "/reservations")
+}
+
+// A demandRef with a revoked reservation and a successful retry returns
+// BOTH — proving the "what did inventory-storage do for order X, line N"
+// history use case end to end over HTTP, not just at the use-case layer.
+func TestGetReservationsByDemandRef_Endpoint_MultipleReservations(t *testing.T) {
+	ts := newTestServer()
+	ts.seedBin(t, "A-1-1", 20)
+	ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": 20, "binId": "A-1-1"})
+
+	firstRec := ts.do(t, http.MethodPost, "/reservations", map[string]any{"sku": "SKU-1", "quantity": 5, "demandRef": "order-1"})
+	var first struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(firstRec.Body.Bytes(), &first)
+
+	revokeRec := ts.do(t, http.MethodDelete, "/reservations/"+first.ID, nil)
+	if revokeRec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 revoking, got %d: %s", revokeRec.Code, revokeRec.Body.String())
+	}
+
+	secondRec := ts.do(t, http.MethodPost, "/reservations", map[string]any{"sku": "SKU-1", "quantity": 5, "demandRef": "order-1"})
+	if secondRec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 on retry, got %d: %s", secondRec.Code, secondRec.Body.String())
+	}
+
+	rec := ts.do(t, http.MethodGet, "/reservations?demandRef=order-1", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body []struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unexpected error decoding response: %v", err)
+	}
+	if len(body) != 2 {
+		t.Fatalf("expected 2 reservations (revoked + retry), got %d: %s", len(body), rec.Body.String())
 	}
 }
 

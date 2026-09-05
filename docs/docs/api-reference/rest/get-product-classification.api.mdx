@@ -1,0 +1,71 @@
+---
+id: get-product-classification
+title: "Get a SKU's current product classification"
+description: "Returns the currently registered classification for a SKU. Side-effect-free. Unlike GetUsableInventory, an unclassified SKU is a 404, not a zero-value response — there is no meaningful 'empty' classification to return."
+sidebar_label: "Get a SKU's current product classification"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "get api-method"
+info_path: docs/api-reference/rest/inventory-storage-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Get a SKU's current product classification"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"get"}
+  path={"/products/{sku}/classification"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+Returns the currently registered classification for a SKU. Side-effect-free. Unlike GetUsableInventory, an unclassified SKU is a 404, not a zero-value response — there is no meaningful "empty" classification to return.
+
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./get-product-classification.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./get-product-classification.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./get-product-classification.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

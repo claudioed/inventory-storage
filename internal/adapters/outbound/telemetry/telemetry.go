@@ -171,7 +171,7 @@ func normalizeEndpoint(endpoint string) string {
 
 	normalized := "http://" + endpoint
 	if raw, ok := os.LookupEnv(endpointEnvVar); ok && !strings.Contains(raw, "://") {
-		os.Setenv(endpointEnvVar, normalized) //nolint:errcheck // only fails on an invalid name, which is a constant here.
+		_ = os.Setenv(endpointEnvVar, normalized) // only fails on an invalid name, which is a constant here.
 	}
 
 	return normalized

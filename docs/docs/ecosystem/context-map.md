@@ -28,21 +28,28 @@ flowchart TB
         FL["<b>facility-layout</b><br/>Site → Zone → Aisle → LocationSlot<br/>PlacementRules · layout read models"]
     end
 
+    subgraph OPS["Operator tooling"]
+        OA["<b>warehouse-ops-agent</b><br/>console BFF · Order Lifecycle fan-out"]
+    end
+
     INV ==>|"<b>warehouse.inventory.events</b><br/>StockReserved<br/>ReservationRevoked"| WP
     WM ==>|"<b>warehouse.workforce.events</b><br/>ShiftPlanCommitted"| WP
     WP ==>|"<b>warehouse.work-planning.events</b><br/>WorkReleased"| FE
     FE ==>|"<b>warehouse.fulfillment.events</b>"| WP
     INV -.->|"<b>GET /locations/{code}/classification</b><br/>sync HTTP, scoped to<br/>Hazmat/TemperatureSensitive SKUs"| FL
     FL -.->|"<i>no wiring today</i>"| WES
+    OA -.->|"<b>GET /reservations?demandRef=</b><br/>read-only, ADR-0012"| INV
 
     classDef this fill:#0f766e,stroke:#134e4a,color:#fff,stroke-width:4px;
     classDef core fill:#1e3a8a,stroke:#1e293b,color:#fff;
     classDef supp fill:#6d28d9,stroke:#4c1d95,color:#fff;
     classDef gen fill:#475569,stroke:#94a3b8,color:#fff,stroke-dasharray: 6 4;
+    classDef ops fill:#7c2d12,stroke:#431407,color:#fff,stroke-dasharray: 3 3;
     class INV this;
     class WP,FE core;
     class WM supp;
     class FL gen;
+    class OA ops;
 ```
 
 **Bold edges are live Kafka topics with a real publisher and a real consumer on
@@ -115,6 +122,22 @@ No relationship, deliberately. Labour planning and inventory truth share no
 concepts. This is the concrete form of the rule that worker identity,
 shift patterns and real-time floor conditions must never leak into the system
 of record.
+
+### → `warehouse-ops-agent`'s console BFF (read-only, via `inventory-mfe`)
+
+Per [ADR-0012](/docs/adr/0012-adopt-mfe-console-architecture) (this
+service's adoption record for `warehouse-ops-agent`'s own ADR-0002, the
+fleet's micro-frontend console architecture): this service ships
+`inventory-mfe`, a Module Federation remote (`web/`) that talks only to
+this service's own REST API, plus one additive read,
+`GET /reservations?demandRef=`, that closes the join-key gap ADR-0002
+identified. `warehouse-ops-agent`'s BFF calls that same endpoint as one leg
+of its cross-service Order Lifecycle fan-out. This is a **read-only,
+inbound HTTP edge** — the browser (via `inventory-mfe`) and the BFF are
+callers of this service's existing REST surface, not a new dependency this
+service takes on anything else. CORS middleware (`CORS_ALLOWED_ORIGINS`) is
+the only new surface this adoption added; no domain model, aggregate, or
+pre-existing endpoint changed.
 
 ### ← `facility-layout` (partial: live synchronous read, no event wiring)
 

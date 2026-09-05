@@ -1,0 +1,71 @@
+---
+id: classify-product
+title: "Register or replace a SKU's product classification"
+description: "Registers or replaces the handling classification for a SKU — SKU-level master data this service owns as source of truth (see ADR 0009), independent of any StockUnit or bin. Idempotent by SKU: classifying an already-classified SKU replaces its prior classification (a legitimate operational action, e.g. an item newly designated hazmat) rather than erroring. handlingTags must be a non-empty, duplicate-free array drawn from the closed enum; when (and only when) handlingTags includes TemperatureSensitive, temperatureClass is required. This classification is consulted by StowStock to enforce hazmat/temperature placement rules at stow time."
+sidebar_label: "Register or replace a SKU's product classification"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "put api-method"
+info_path: docs/api-reference/rest/inventory-storage-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Register or replace a SKU's product classification"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"put"}
+  path={"/products/{sku}/classification"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+Registers or replaces the handling classification for a SKU — SKU-level master data this service owns as source of truth (see ADR 0009), independent of any StockUnit or bin. Idempotent by SKU: classifying an already-classified SKU replaces its prior classification (a legitimate operational action, e.g. an item newly designated hazmat) rather than erroring. handlingTags must be a non-empty, duplicate-free array drawn from the closed enum; when (and only when) handlingTags includes TemperatureSensitive, temperatureClass is required. This classification is consulted by StowStock to enforce hazmat/temperature placement rules at stow time.
+
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./classify-product.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./classify-product.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./classify-product.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      
