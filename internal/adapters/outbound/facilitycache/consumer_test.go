@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"testing"
@@ -491,5 +492,44 @@ func TestLocationSlotRegisteredWithoutCodeIsRejected(t *testing.T) {
 
 	if c.Slots() != 0 {
 		t.Fatalf("expected the malformed slot to be skipped, got %d cached", c.Slots())
+	}
+}
+
+// A topic that does not exist yet must NOT be fatal. facility-layout
+// creates it on its first publish, so a consumer that starts first (fresh
+// cluster, or before that service is deployed) has to tolerate it. Treating
+// this as an error produced a real CrashLoopBackOff on a first rollout.
+func TestUnknownTopicIsNotFatal(t *testing.T) {
+	if !isUnknownTopic(kafkago.UnknownTopicOrPartition) {
+		t.Fatal("expected the bare protocol error to be recognised")
+	}
+	wrapped := fmt.Errorf("read partitions: %w", kafkago.UnknownTopicOrPartition)
+	if !isUnknownTopic(wrapped) {
+		t.Fatal("expected a wrapped protocol error to be recognised")
+	}
+	if isUnknownTopic(errors.New("connection refused")) {
+		t.Fatal("a plain transport error must not be treated as a missing topic")
+	}
+	if isUnknownTopic(nil) {
+		t.Fatal("nil must not be treated as a missing topic")
+	}
+}
+
+// With no readiness target (the shape newTargetOffsets returns for a
+// missing or empty topic) the consumer is trivially ready and fails open,
+// rather than blocking startup on a topic that may never have been written.
+func TestNoTargetMeansImmediatelyReadyAndFailOpen(t *testing.T) {
+	c := newTestConsumer(nil, targetOffsets{})
+	c.markReady()
+
+	if !c.Ready() {
+		t.Fatal("expected a consumer with no readiness target to be ready")
+	}
+	got, err := c.GetSlotAttributes(context.Background(), mustBinId(t, "WH1-STOR-AMB-A07-03-02-B"))
+	if err != nil {
+		t.Fatalf("GetSlotAttributes: %v", err)
+	}
+	if got.Known {
+		t.Fatalf("expected fail-open Known=false, got %+v", got)
 	}
 }

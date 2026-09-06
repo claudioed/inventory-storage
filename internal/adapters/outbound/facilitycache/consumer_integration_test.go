@@ -365,3 +365,27 @@ func lookup(t *testing.T, c *facilitycache.Consumer, binID string) product.SlotA
 	}
 	return got
 }
+
+// The regression test for the CrashLoopBackOff this adapter caused on its
+// first real rollout: constructing a consumer against a topic that does NOT
+// EXIST must succeed, not error. Reproduced here against a real broker,
+// because the failure came from the broker's actual
+// UnknownTopicOrPartition response -- no unit test with a fake reader ever
+// reaches that code path.
+func TestConsumerToleratesAMissingTopic(t *testing.T) {
+	brokerList := startBroker(t)
+	topic := uniqueTopic(t) // deliberately NEVER created
+
+	c := newConsumerOnTopic(t, brokerList, topic)
+	defer func() { _ = c.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := c.WaitReady(ctx); err != nil {
+		t.Fatalf("expected a missing topic to be tolerated and immediately ready, got %v", err)
+	}
+
+	if got := lookup(t, c, "WH1-STOR-AMB-A07-03-02-B"); got.Known {
+		t.Fatalf("expected fail-open Known=false against a missing topic, got %+v", got)
+	}
+}

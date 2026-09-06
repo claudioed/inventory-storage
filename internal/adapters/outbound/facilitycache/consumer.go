@@ -38,6 +38,7 @@ package facilitycache
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -226,6 +227,22 @@ func newTargetOffsets(ctx context.Context, brokers []string, topic string) (targ
 
 	partitions, err := conn.ReadPartitions(topic)
 	if err != nil {
+		if isUnknownTopic(err) {
+			// The topic does not exist yet. That is a legitimate startup
+			// state, not a failure: facility-layout creates it on its
+			// first publish, so a consumer that happens to start first
+			// (a fresh cluster, or before that service is deployed) must
+			// wait for it rather than crash. Treating it as fatal here
+			// produced a real CrashLoopBackOff on a first rollout --
+			// Kubernetes eventually recovered it, but only because the
+			// topic appeared between restarts.
+			//
+			// No partitions means no readiness target, so the consumer
+			// comes up trivially ready with an empty cache (fail-open,
+			// loudly warned about by the composition root) and picks the
+			// topic up live once it is created.
+			return targetOffsets{}, nil
+		}
 		return nil, fmt.Errorf("facilitycache: read partitions for %s: %w", topic, err)
 	}
 
@@ -251,6 +268,14 @@ func newTargetOffsets(ctx context.Context, brokers []string, topic string) (targ
 		}
 	}
 	return out, nil
+}
+
+// isUnknownTopic reports whether err is Kafka's UnknownTopicOrPartition,
+// i.e. "that topic does not exist (yet)" rather than a real transport or
+// broker failure. Checked via errors.Is against the typed protocol error so
+// this does not depend on message wording.
+func isUnknownTopic(err error) bool {
+	return errors.Is(err, kafkago.UnknownTopicOrPartition)
 }
 
 // Close releases the underlying Kafka reader.
