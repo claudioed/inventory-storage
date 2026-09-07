@@ -14,6 +14,17 @@ description: Expose this bounded context to the AI ecosystem via an MCP server b
 there); this ADR records the same decision for `inventory-storage`, adapted to
 this context's use cases and tools.
 
+**Addendum 2026-09-07 — deployable.** `cmd/mcp` is now built into the service
+image as `/app/mcp` and deployed by the Helm chart as its own Deployment +
+ClusterIP Service (`<release>-mcp`, port 8090) behind `mcp.enabled` (off by
+default), with bearer keys from a chart-rendered Secret
+(`mcp.readKey` / `mcp.readWriteKey`). The binary now serves an unauthenticated
+`GET /healthz` for the probes and mounts the MCP endpoint at both `/` and
+`/mcp`. Made deployable to the `warehouse` kind cluster on 2026-09-07; the
+cluster rollout itself is a `warehouse-infra` change (`mcp.enabled=true` plus
+generated keys per service, and ops-agent's `INVENTORY_STORAGE_MCP_ENDPOINT`
+pointed at `http://inventory-storage-mcp.warehouse-systems.svc.cluster.local:8090/mcp`).
+
 ## Context
 
 The platform is being connected to the AI ecosystem (Claude, Cursor, ChatGPT,
