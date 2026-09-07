@@ -111,6 +111,27 @@ go run ./cmd/inventory
 Migrations in `migrations/` run automatically on startup (via
 `MIGRATIONS_PATH`, default `migrations`).
 
+### Running the MCP server in Kubernetes
+
+The MCP server (`cmd/mcp`, ADR-0008) ships in the same image as `/app/mcp`
+and is deployed by the Helm chart as a separate Deployment + ClusterIP
+Service named `<release>-mcp`, gated on `mcp.enabled` (off by default). It
+serves MCP over Streamable HTTP at both `/` and `/mcp` on port `8090`
+(`mcp.service.port` → `mcp.httpAddr`), and answers `GET /healthz` without a
+bearer key so the liveness/readiness probes need no secret. Bearer keys come
+from `mcp.readKey` / `mcp.readWriteKey` (rendered into a `<release>-mcp`
+Secret) or from `mcp.existingSecret`; the binary reads `DATABASE_URL` from
+the same Secret as the HTTP service, and `REPORTS_BASE_URL` is wired to the
+reports Service automatically when `analytics.enabled=true`.
+
+```sh
+helm upgrade --install inventory-storage charts/inventory-storage \
+  --set database.url='postgres://…' \
+  --set mcp.enabled=true --set mcp.readKey='…' --set mcp.readWriteKey='…'
+# in-cluster endpoint for MCP clients (e.g. warehouse-ops-agent):
+#   http://inventory-storage-mcp.<namespace>.svc.cluster.local:8090/mcp
+```
+
 ## Endpoints
 
 | Method | Path | Use case |
