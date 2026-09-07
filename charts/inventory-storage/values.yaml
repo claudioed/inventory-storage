@@ -174,3 +174,34 @@ analytics:
       requests:
         cpu: 100m
         memory: 128Mi
+
+# --- MCP server (ADR-0008) ---
+# The Model Context Protocol server (cmd/mcp): a second deployable over the
+# same use cases and OLTP database as the HTTP service, served over Streamable
+# HTTP at "/" and "/mcp" with an unauthenticated GET /healthz for the probes.
+# Disabled by default so existing releases are unaffected; set
+# mcp.enabled=true and provide at least one key to deploy it.
+mcp:
+  enabled: false
+  replicaCount: 1
+  httpAddr: ":8090"
+  service:
+    type: ClusterIP
+    port: 8090
+    targetPort: 8090
+  # Static bearer keys (ADR-0008). readKey grants read scope, readWriteKey
+  # additionally grants the revoke_reservation write tool. With neither set
+  # the server starts but rejects every request (fail closed).
+  readKey: ""
+  readWriteKey: ""
+  # Name of an existing Secret with MCP_READ_KEY / MCP_READWRITE_KEY keys.
+  # Takes precedence over the inline keys above.
+  existingSecret: ""
+  extraEnv: []
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi

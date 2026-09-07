@@ -94,7 +94,7 @@ func run() error {
 	server := inboundmcp.NewServer(deps)
 
 	auth := inboundmcp.NewStaticKeyAuth(authKeys(logger))
-	handler := inboundmcp.Handler(server, auth)
+	handler := newRouter(inboundmcp.Handler(server, auth))
 
 	srv := &http.Server{
 		Addr:              httpAddr,
@@ -122,6 +122,29 @@ func run() error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+// newRouter wraps the authenticated MCP handler in the process's HTTP surface:
+//
+//   - GET /healthz answers 200 {"status":"ok"} WITHOUT a bearer key, so the
+//     Kubernetes liveness/readiness probes (charts/.../mcp-deployment.yaml)
+//     do not need the secret and a missing key cannot make the pod unready.
+//   - The MCP Streamable HTTP endpoint is mounted at BOTH "/" (the address
+//     the binary has always served) and "/mcp" (warehouse-ops-agent's
+//     *_MCP_ENDPOINT convention and the docs' examples), so either URL works.
+//
+// Everything except /healthz still goes through the auth middleware.
+func newRouter(mcpHandler http.Handler) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	mux.Handle("/mcp", mcpHandler)
+	mux.Handle("/mcp/", mcpHandler)
+	mux.Handle("/", mcpHandler)
+	return mux
 }
 
 // buildAdapters wires the Postgres repos when DATABASE_URL is set, or falls
