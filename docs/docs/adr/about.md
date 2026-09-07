@@ -70,6 +70,7 @@ Typos, broken links and formatting are of course fair game.
 | [0010](./0010-dot-hazard-class-and-same-bin-segregation.md) | Optional DOT hazard class and same-bin DOT segregation at stow time | Accepted |
 | [0011](./0011-analytical-data-product.md) | Per-service analytical data product (report) via a separate analytics topic | Accepted |
 | [0012](./0012-adopt-mfe-console-architecture.md) | Adopt the fleet's micro-frontend console architecture (ADR-0002 in `warehouse-ops-agent`) | Accepted |
+| [0013](./0013-standard-metrics-convention.md) | Standard metrics convention across the fleet | Accepted |
 
 Each of these reconstructs a decision that is actually visible in this
 repository's history, `CLAUDE.md`, `TASKS.md` or code — none is a generic
