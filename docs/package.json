@@ -36,7 +36,7 @@
     "@docusaurus/tsconfig": "3.10.2",
     "@docusaurus/types": "3.10.2",
     "@types/react": "^19.0.0",
-    "typescript": "~7.0.2"
+    "typescript": "~6.0.3"
   },
   "browserslist": {
     "production": [
@@ -63,6 +63,8 @@
     "serialize-javascript": "^7.1.0",
     "webpack-dev-server": "^5.2.6",
     "sockjs": "^0.3.24",
-    "qs": "^6.16.0"
+    "qs": "^6.16.0",
+    "@faker-js/faker": "10.6.0",
+    "image-size": "2.0.2"
   }
 }
