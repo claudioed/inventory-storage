@@ -41,7 +41,6 @@ spec:
               value: {{ .Values.analytics.reports.httpAddr | quote }}
             # The reports binary reads ANALYTICS_DATABASE_URL; it is fed the
             # READER (read-only) DSN so even a bug cannot mutate the read model.
-            {{- include "inventory-storage.authEnv" . | nindent 12 }}
             - name: ANALYTICS_DATABASE_URL
               valueFrom:
                 secretKeyRef:

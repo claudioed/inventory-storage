@@ -36,12 +36,6 @@ info:
 servers:
   - url: http://localhost:8080
     description: Local development
-# Fleet REST identity (ADR-0014; warehouse-ops-agent ADR 0005): every
-# operation needs a static bearer key. GET/HEAD/OPTIONS accept the read
-# scope; mutating operations need the read-write scope. /healthz overrides
-# this with `security: []` so probes stay unauthenticated.
-security:
-  - bearerAuth: []
 tags:
   - name: Stock
     description: >
@@ -78,7 +72,6 @@ paths:
   /healthz:
     get:
       operationId: getHealthz
-      security: []
       summary: Liveness probe
       description: >
         Returns 200 with a static status body if the process is up. Does
@@ -797,19 +790,6 @@ paths:
           $ref: "#/components/responses/InternalError"
 
 components:
-  securitySchemes:
-    bearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: opaque
-      description: >
-        Static bearer API key from the service's Kubernetes Secret
-        (`API_READ_KEY` grants the read scope, `API_READWRITE_KEY` the
-        read-write scope). Missing or invalid credentials answer 401 with a
-        `WWW-Authenticate: Bearer` challenge; a read key on a mutating
-        operation answers 403. Both bodies are RFC 7807 problem details
-        (`…/unauthenticated`, `…/insufficient-scope`). `AUTH_MODE=log|off`
-        relaxes enforcement during rollout / local development.
   parameters:
     ReservationId:
       name: id

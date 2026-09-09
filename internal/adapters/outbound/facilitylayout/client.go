@@ -39,18 +39,6 @@ type HTTPDoer interface {
 type Client struct {
 	baseURL string
 	doer    HTTPDoer
-	bearer  string
-}
-
-// WithBearer returns a copy of the client that sends "Authorization:
-// Bearer <key>" on every request -- facility-layout's own REST identity
-// (fleet ADR: warehouse-ops-agent ADR 0005), fed from FACILITY_LAYOUT_API_KEY.
-// An empty key leaves requests exactly as before, so a supplier still
-// running AUTH_MODE=off is unaffected.
-func (c *Client) WithBearer(key string) *Client {
-	cp := *c
-	cp.bearer = key
-	return &cp
 }
 
 // NewClient builds a Client against baseURL (e.g. from FACILITY_LAYOUT_BASE_URL).
@@ -82,9 +70,6 @@ func (c *Client) GetSlotAttributes(ctx context.Context, binID shared.BinId) (pro
 		return product.SlotAttributes{}, err
 	}
 	req.Header.Set("Accept", "application/json")
-	if c.bearer != "" {
-		req.Header.Set("Authorization", "Bearer "+c.bearer)
-	}
 
 	resp, err := c.doer.Do(req)
 	if err != nil {
