@@ -94,3 +94,10 @@ Name of the Secret holding the analytics DSNs, when the chart creates its own.
 {{- include "inventory-storage.fullname" . }}-analytics
 {{- end }}
 {{- end }}
+
+{{/*
+Fully qualified name of the MCP server deployment/service (ADR-0008).
+*/}}
+{{- define "inventory-storage.mcpFullname" -}}
+{{- include "inventory-storage.fullname" . }}-mcp
+{{- end }}

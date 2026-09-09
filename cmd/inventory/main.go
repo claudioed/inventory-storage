@@ -4,6 +4,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -14,6 +16,7 @@ import (
 
 	inboundhttp "github.com/claudioed/inventory-storage/internal/adapters/inbound/http"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/events"
+	"github.com/claudioed/inventory-storage/internal/adapters/outbound/facilitycache"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/facilitylayout"
 	kafkaadapter "github.com/claudioed/inventory-storage/internal/adapters/outbound/kafka"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/memory"
@@ -81,7 +84,29 @@ func run() error {
 	}
 
 	clock := memory.SystemClock{}
-	locationLookup := buildLocationLookup(getenv("LOCATION_LOOKUP_MODE", "permissive"), os.Getenv("FACILITY_LAYOUT_BASE_URL"), logger)
+	// The lookup's Kafka consumer (when LOCATION_LOOKUP_MODE=kafka) must
+	// outlive this call and stop on shutdown, so it gets its own
+	// cancellable context rather than the signal context established
+	// further down — which does not exist yet at this point.
+	lookupCtx, stopLookup := context.WithCancel(context.Background())
+	defer stopLookup()
+
+	var kafkaBrokers []string
+	if raw := os.Getenv("KAFKA_BROKERS"); raw != "" {
+		kafkaBrokers = strings.Split(raw, ",")
+	}
+
+	locationLookup, closeLocationLookup, err := buildLocationLookup(
+		lookupCtx,
+		getenv("LOCATION_LOOKUP_MODE", "permissive"),
+		os.Getenv("FACILITY_LAYOUT_BASE_URL"),
+		kafkaBrokers,
+		logger,
+	)
+	if err != nil {
+		return err
+	}
+	defer closeLocationLookup()
 
 	server := &inboundhttp.Server{
 		ReceiveStock: &usecases.ReceiveStock{Events: publisher, Clock: clock},
@@ -226,16 +251,74 @@ func buildAdapters(databaseURL, migrationsPath, eventPublisher string, logger *s
 }
 
 // buildLocationLookup selects the outbound LocationClassificationLookup
-// adapter via LOCATION_LOOKUP_MODE (http|permissive), defaulting to
+// adapter via LOCATION_LOOKUP_MODE (kafka|http|permissive), defaulting to
 // "permissive" so existing tests, CI and deployments that do not set the
 // env var are unaffected — mirroring the EVENT_PUBLISHER=kafka|log
-// pattern. "http" requires FACILITY_LAYOUT_BASE_URL.
-func buildLocationLookup(mode, facilityLayoutBaseURL string, logger *slog.Logger) ports.LocationClassificationLookup {
-	if !strings.EqualFold(mode, "http") {
-		return facilitylayout.NewPermissiveLookup()
+// pattern.
+//
+//   - "kafka"      maintains a local cache fed by facility-layout's
+//     warehouse.facility.events topic. No per-stow HTTP call, so
+//     facility-layout stops being a runtime dependency of StowStock.
+//     Requires KAFKA_BROKERS. Blocks until the initial replay completes
+//     (see the facilitycache package doc for why).
+//   - "http"       calls facility-layout synchronously per stow. Requires
+//     FACILITY_LAYOUT_BASE_URL. Retained as the rollback for "kafka".
+//   - "permissive" (default) answers Known=false for everything.
+//
+// The returned closer releases the Kafka reader when one was started, and
+// is a no-op otherwise.
+func buildLocationLookup(ctx context.Context, mode, facilityLayoutBaseURL string, brokers []string, logger *slog.Logger) (ports.LocationClassificationLookup, func(), error) {
+	switch {
+	case strings.EqualFold(mode, "kafka"):
+		if len(brokers) == 0 {
+			return nil, nil, fmt.Errorf("LOCATION_LOOKUP_MODE=kafka requires KAFKA_BROKERS to be set")
+		}
+		consumer, err := facilitycache.NewConsumer(ctx, brokers, logger)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to start the Kafka-sourced location cache: %w", err)
+		}
+		logger.Info("location classification lookup configured",
+			"mode", "kafka", "topic", facilitycache.Topic, "brokers", brokers)
+
+		go func() {
+			logger.Info("facility location cache consumer running", "topic", facilitycache.Topic)
+			// Run only ever returns on error (including the plain
+			// context.Canceled of an orderly shutdown), never nil.
+			if err := consumer.Run(ctx); !errors.Is(err, context.Canceled) {
+				logger.Error("facility location cache consumer stopped", "error", err)
+			}
+		}()
+
+		// Preserve the retired HTTP client's "never answer against
+		// incomplete data" property: an empty cache reports Known=false,
+		// which is a FAIL-OPEN answer, so serving traffic mid-replay
+		// would silently wave through stows that should have been
+		// classified.
+		logger.Info("waiting for the facility location cache to replay its initial history before accepting traffic")
+		waitCtx, cancel := context.WithTimeout(ctx, facilitycache.WaitReadyTimeout)
+		defer cancel()
+		if err := consumer.WaitReady(waitCtx); err != nil {
+			_ = consumer.Close()
+			return nil, nil, fmt.Errorf("facility location cache did not become ready within %s: %w", facilitycache.WaitReadyTimeout, err)
+		}
+		if consumer.Slots() == 0 {
+			// Not fatal — a genuinely empty facility-layout is a valid
+			// state — but it means every lookup fails open, so say so
+			// loudly rather than letting it look like a working cache.
+			logger.Warn("facility location cache is ready but EMPTY; every location will report Known=false (fail-open) until facility-layout publishes",
+				"topic", facilitycache.Topic)
+		} else {
+			logger.Info("facility location cache is ready", "slots", consumer.Slots(), "zones", consumer.Zones())
+		}
+		return consumer, func() { _ = consumer.Close() }, nil
+
+	case strings.EqualFold(mode, "http"):
+		logger.Info("location classification lookup configured", "mode", "http", "facility_layout_base_url", facilityLayoutBaseURL)
+		return facilitylayout.NewClient(facilityLayoutBaseURL, nil), func() {}, nil
+
+	default:
+		return facilitylayout.NewPermissiveLookup(), func() {}, nil
 	}
-	logger.Info("location classification lookup configured", "mode", "http", "facility_layout_base_url", facilityLayoutBaseURL)
-	return facilitylayout.NewClient(facilityLayoutBaseURL, nil)
 }
 
 func getenv(key, fallback string) string {

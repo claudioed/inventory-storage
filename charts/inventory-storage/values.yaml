@@ -46,6 +46,24 @@ ingress:
           pathType: Prefix
   tls: []
 
+# Gateway API HTTPRoute — additive, disabled-by-default alternative to the
+# Ingress above. Chart-driven equivalent of the raw kubectl HTTPRoute proven
+# live against Kong's Ingress Controller in warehouse-infra's
+# fulfillment-execution pilot (Kong routes HTTPRoute traffic once its
+# GatewayClass carries konghq.com/gatewayclass-unmanaged: "true"). Leaving
+# this disabled makes it a strict no-op; set gatewayApi.enabled=true to
+# switch this service from Ingress to HTTPRoute.
+gatewayApi:
+  enabled: false
+  parentRefs:
+    - name: ""
+      namespace: ""
+      sectionName: "http"
+  hosts:
+    - path: /
+      pathType: PathPrefix
+  stripPath: true
+
 resources:
   limits:
     cpu: 500m
@@ -156,3 +174,26 @@ analytics:
       requests:
         cpu: 100m
         memory: 128Mi
+
+# --- MCP server (ADR-0008) ---
+# The Model Context Protocol server (cmd/mcp): a second deployable over the
+# same use cases and OLTP database as the HTTP service, served over Streamable
+# HTTP at "/" and "/mcp" with a GET /healthz for the probes.
+# Disabled by default so existing releases are unaffected; set
+# mcp.enabled=true to deploy it.
+mcp:
+  enabled: false
+  replicaCount: 1
+  httpAddr: ":8090"
+  service:
+    type: ClusterIP
+    port: 8090
+    targetPort: 8090
+  extraEnv: []
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi

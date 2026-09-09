@@ -3,10 +3,6 @@
 // those to the inbound MCP adapter, then serves MCP over Streamable HTTP. It
 // is a second, independent deployable alongside cmd/inventory (the HTTP
 // service), per ADR-0008.
-//
-// Auth is a static bearer key (no IdP): set MCP_READ_KEY (and optionally
-// MCP_READWRITE_KEY) from a Kubernetes Secret. A request must present a valid
-// key; the scope it grants gates the tools.
 package main
 
 import (
@@ -93,8 +89,7 @@ func run() error {
 	}
 	server := inboundmcp.NewServer(deps)
 
-	auth := inboundmcp.NewStaticKeyAuth(authKeys(logger))
-	handler := inboundmcp.Handler(server, auth)
+	handler := newRouter(inboundmcp.Handler(server))
 
 	srv := &http.Server{
 		Addr:              httpAddr,
@@ -124,6 +119,27 @@ func run() error {
 	return srv.Shutdown(shutdownCtx)
 }
 
+// newRouter wraps the MCP handler in the process's HTTP surface:
+//
+//   - GET /healthz answers 200 {"status":"ok"}, so the Kubernetes
+//     liveness/readiness probes (charts/.../mcp-deployment.yaml) have a
+//     cheap target.
+//   - The MCP Streamable HTTP endpoint is mounted at BOTH "/" (the address
+//     the binary has always served) and "/mcp" (warehouse-ops-agent's
+//     *_MCP_ENDPOINT convention and the docs' examples), so either URL works.
+func newRouter(mcpHandler http.Handler) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	mux.Handle("/mcp", mcpHandler)
+	mux.Handle("/mcp/", mcpHandler)
+	mux.Handle("/", mcpHandler)
+	return mux
+}
+
 // buildAdapters wires the Postgres repos when DATABASE_URL is set, or falls
 // back to the in-memory repos for local development without a database —
 // exactly the selection cmd/inventory makes. The MCP server always logs its
@@ -148,24 +164,6 @@ func buildAdapters(databaseURL, migrationsPath string, logger *slog.Logger) (
 		return nil, nil, nil, noop, err
 	}
 	return postgres.NewStockRepo(pool), postgres.NewReservationRepo(pool), publisher, pool.Close, nil
-}
-
-// authKeys reads the bearer keys from the environment. MCP_READ_KEY grants
-// read scope; MCP_READWRITE_KEY grants read-write. If neither is set the server
-// still starts but rejects every request (fail closed) — a missing key must
-// never mean "open to everyone". The keys themselves are never logged.
-func authKeys(logger *slog.Logger) map[string]inboundmcp.Scope {
-	keys := make(map[string]inboundmcp.Scope)
-	if k := os.Getenv("MCP_READ_KEY"); k != "" {
-		keys[k] = inboundmcp.ScopeRead
-	}
-	if k := os.Getenv("MCP_READWRITE_KEY"); k != "" {
-		keys[k] = inboundmcp.ScopeReadWrite
-	}
-	if len(keys) == 0 {
-		logger.Warn("no MCP_READ_KEY or MCP_READWRITE_KEY set; server will reject all requests")
-	}
-	return keys
 }
 
 // newLogger builds the process-wide structured logger, mirroring
