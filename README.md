@@ -316,6 +316,10 @@ Collector's job, not this service's.
 | `SERVICE_VERSION` | `dev` | `service.version` resource attribute. |
 | `ENVIRONMENT` | `local` | `deployment.environment.name` resource attribute. |
 | `LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error`, case-insensitive. Also gates the OTel SDK's own diagnostics, which are bridged onto the same JSON logger. |
+| `AUTH_MODE` | `enforce` if a key is set, else `off` | REST identity (ADR-0014): `enforce` rejects unauthenticated/under-scoped requests (401/403, RFC 7807), `log` lets them through but logs `auth: would-reject`, `off` disables the middleware. Unknown values fall back to the default. `/healthz` is always open. |
+| `API_READ_KEY` | — | Static bearer key granting the **read** scope (`GET`/`HEAD`/`OPTIONS`, and every `/reports/*` route). Falls back to `MCP_READ_KEY`. |
+| `API_READWRITE_KEY` | — | Static bearer key granting the **read-write** scope (every mutating route). Falls back to `MCP_READWRITE_KEY`. |
+| `FACILITY_LAYOUT_API_KEY` | — | Bearer this service presents to facility-layout when `LOCATION_LOOKUP_MODE=http`; empty sends no header. |
 
 A Collector is *expected* at `OTEL_EXPORTER_OTLP_ENDPOINT`, but is never
 required: the exporters dial lazily and no blocking dial option is set, so a

@@ -9,6 +9,7 @@ data:
   EVENT_PUBLISHER: {{ .Values.config.eventPublisher | quote }}
   LOG_LEVEL: {{ .Values.config.logLevel | quote }}
   ENVIRONMENT: {{ .Values.environment | quote }}
+  AUTH_MODE: {{ .Values.auth.mode | quote }}
   {{- if .Values.otel.enabled }}
   OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.otel.endpoint | quote }}
   OTEL_SERVICE_NAME: {{ .Values.otel.serviceName | quote }}

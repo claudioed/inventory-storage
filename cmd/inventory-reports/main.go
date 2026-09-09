@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/claudioed/inventory-storage/internal/adapters/inbound/auth"
 	inboundhttp "github.com/claudioed/inventory-storage/internal/adapters/inbound/http"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/analyticsstore"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/telemetry"
@@ -72,7 +73,7 @@ func run() error {
 	}
 
 	handlers := &inboundhttp.ReportsHandlers{Store: analyticsstore.NewPostgresReport(pool)}
-	router := inboundhttp.NewReportsRouter(handlers, logger, serviceName)
+	router := inboundhttp.NewReportsRouter(handlers, logger, serviceName, inboundhttp.WithAuth(buildAuth(logger)))
 
 	srv := &http.Server{Addr: httpAddr, Handler: router, ReadHeaderTimeout: 5 * time.Second}
 
@@ -118,4 +119,21 @@ func getenv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// buildAuth mirrors cmd/inventory's: same keys, same AUTH_MODE semantics;
+// the reports router additionally pins every route to the read scope.
+func buildAuth(logger *slog.Logger) auth.Middleware {
+	keys := auth.KeysFromEnv(os.Getenv)
+	authn := auth.NewStaticKeyAuth(keys)
+	defaultMode := auth.ModeOff
+	if authn.HasKeys() {
+		defaultMode = auth.ModeEnforce
+	}
+	mode := auth.ParseMode(os.Getenv("AUTH_MODE"), defaultMode)
+	if mode == auth.ModeOff {
+		logger.Warn("REST auth is OFF: no API_READ_KEY/API_READWRITE_KEY configured or AUTH_MODE=off")
+	}
+	logger.Info("REST auth configured", "mode", string(mode), "keys", len(keys))
+	return auth.Middleware{Authn: authn, Mode: mode, Logger: logger}
 }

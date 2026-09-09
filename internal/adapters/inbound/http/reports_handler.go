@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/riandyrn/otelchi"
 
+	"github.com/claudioed/inventory-storage/internal/adapters/inbound/auth"
 	"github.com/claudioed/inventory-storage/internal/analytics/report"
 )
 
@@ -150,7 +151,16 @@ func writeReportInternal(w http.ResponseWriter, r *http.Request, err error) {
 // NewReportsRouter builds the chi router for the inventory-reports reader
 // service. A nil logger falls back to slog.Default(); an empty serviceName
 // falls back to DefaultServiceName.
-func NewReportsRouter(h *ReportsHandlers, logger *slog.Logger, serviceName string) http.Handler {
+func NewReportsRouter(h *ReportsHandlers, logger *slog.Logger, serviceName string, opts ...RouterOption) http.Handler {
+	var cfg routerConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+	// The reports surface is read-only: every route requires the read
+	// scope regardless of method (ADR-0014).
+	if cfg.auth != nil {
+		cfg.auth.Required = func(*http.Request) auth.Scope { return auth.ScopeRead }
+	}
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -165,8 +175,11 @@ func NewReportsRouter(h *ReportsHandlers, logger *slog.Logger, serviceName strin
 	r.Use(middleware.Recoverer)
 
 	r.Get("/healthz", h.GetReportsHealthz)
-	r.Get("/reports/flow-accuracy", h.GetFlowAccuracy)
-	r.Get("/reports/flow-accuracy/freshness", h.GetFreshness)
+	r.Group(func(r chi.Router) {
+		r.Use(cfg.authHandler())
+		r.Get("/reports/flow-accuracy", h.GetFlowAccuracy)
+		r.Get("/reports/flow-accuracy/freshness", h.GetFreshness)
+	})
 
 	return r
 }
