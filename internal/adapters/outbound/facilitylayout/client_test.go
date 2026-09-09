@@ -159,3 +159,24 @@ func TestClient_GetSlotAttributes_SetsAcceptHeaderAndMethod(t *testing.T) {
 		t.Fatalf("expected Accept: application/json header")
 	}
 }
+
+func TestClient_WithBearer_SendsAuthorizationHeaderOnlyWhenSet(t *testing.T) {
+	bin, _ := shared.NewBinId("BIN-1")
+	cases := map[string]string{"": "", "k-read": "Bearer k-read"}
+	for key, want := range cases {
+		doer := &fakeDoer{resp: jsonResponse(http.StatusNotFound, "")} //nolint:bodyclose
+		client := facilitylayout.NewClient("http://facility-layout.local", doer).WithBearer(key)
+		_, _ = client.GetSlotAttributes(context.Background(), bin)
+		if got := doer.req.Header.Get("Authorization"); got != want {
+			t.Fatalf("key %q: Authorization = %q, want %q", key, got, want)
+		}
+	}
+	// The original client is untouched by WithBearer (copy semantics).
+	doer := &fakeDoer{resp: jsonResponse(http.StatusNotFound, "")} //nolint:bodyclose
+	base := facilitylayout.NewClient("http://facility-layout.local", doer)
+	_ = base.WithBearer("x")
+	_, _ = base.GetSlotAttributes(context.Background(), bin)
+	if doer.req.Header.Get("Authorization") != "" {
+		t.Fatal("WithBearer must not mutate the receiver")
+	}
+}
