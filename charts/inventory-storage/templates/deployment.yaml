@@ -60,6 +60,7 @@ spec:
             - name: OTEL_SERVICE_NAME
               value: {{ .Values.otel.serviceName | quote }}
             {{- end }}
+            {{- include "inventory-storage.authEnv" . | nindent 12 }}
             {{- if or .Values.database.url .Values.database.existingSecret }}
             - name: DATABASE_URL
               valueFrom:

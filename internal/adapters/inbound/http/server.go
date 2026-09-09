@@ -13,6 +13,7 @@ import (
 	"github.com/riandyrn/otelchi"
 	otelchimetric "github.com/riandyrn/otelchi/metric"
 
+	"github.com/claudioed/inventory-storage/internal/adapters/inbound/auth"
 	"github.com/claudioed/inventory-storage/internal/application/ports"
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
 	"github.com/claudioed/inventory-storage/internal/domain/product"
@@ -59,12 +60,16 @@ const defaultCORSAllowedOrigins = "http://localhost:5173,http://localhost:5182"
 // is what lets the telemetry slog handler stamp trace_id/span_id onto it.
 // WithChiRoutes resolves the route pattern up front, so spans are named
 // "/reservations/{id}" rather than one distinct name per reservation id.
-func NewRouter(s *Server, logger *slog.Logger, serviceName string) http.Handler {
+func NewRouter(s *Server, logger *slog.Logger, serviceName string, opts ...RouterOption) http.Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if serviceName == "" {
 		serviceName = DefaultServiceName
+	}
+	var cfg routerConfig
+	for _, o := range opts {
+		o(&cfg)
 	}
 
 	r := chi.NewRouter()
@@ -90,19 +95,55 @@ func NewRouter(s *Server, logger *slog.Logger, serviceName string) http.Handler 
 		AllowCredentials: false,
 	}))
 
+	// /healthz stays OUTSIDE the auth group: probes carry no bearer key.
 	r.Get("/healthz", s.handleHealthz)
-	r.Post("/stock/receive", s.handleReceiveStock)
-	r.Post("/stock/stow", s.handleStowStock)
-	r.Post("/reservations", s.handleReserveStock)
-	r.Get("/reservations", s.handleGetReservationsByDemandRef)
-	r.Delete("/reservations/{id}", s.handleRevokeReservation)
-	r.Post("/reservations/{id}/confirm-pick", s.handleConfirmPick)
-	r.Get("/inventory/{sku}/usable", s.handleGetUsable)
-	r.Post("/bins/{binId}/cycle-count", s.handleRunCycleCount)
-	r.Put("/products/{sku}/classification", s.handleClassifyProduct)
-	r.Get("/products/{sku}/classification", s.handleGetProductClassification)
+
+	// Every domain route sits behind the fleet REST identity middleware
+	// (ADR-0014 here, warehouse-ops-agent ADR 0005): GET/HEAD/OPTIONS need
+	// the read scope, everything else read-write. With no WithAuth option
+	// (existing tests, local dev without keys) the group is a pass-through.
+	r.Group(func(r chi.Router) {
+		r.Use(cfg.authHandler())
+		r.Post("/stock/receive", s.handleReceiveStock)
+		r.Post("/stock/stow", s.handleStowStock)
+		r.Post("/reservations", s.handleReserveStock)
+		r.Get("/reservations", s.handleGetReservationsByDemandRef)
+		r.Delete("/reservations/{id}", s.handleRevokeReservation)
+		r.Post("/reservations/{id}/confirm-pick", s.handleConfirmPick)
+		r.Get("/inventory/{sku}/usable", s.handleGetUsable)
+		r.Post("/bins/{binId}/cycle-count", s.handleRunCycleCount)
+		r.Put("/products/{sku}/classification", s.handleClassifyProduct)
+		r.Get("/products/{sku}/classification", s.handleGetProductClassification)
+	})
 
 	return r
+}
+
+// RouterOption customises NewRouter without widening its signature for
+// every caller.
+type RouterOption func(*routerConfig)
+
+type routerConfig struct {
+	auth *auth.Middleware
+}
+
+// WithAuth mounts the REST identity middleware on every route except
+// /healthz. The composition root decides the mode (enforce/log/off); the
+// adapter only supplies its own RFC 7807 problem-type base when unset.
+func WithAuth(mw auth.Middleware) RouterOption {
+	return func(cfg *routerConfig) {
+		if mw.ProblemBase == "" {
+			mw.ProblemBase = problemBaseURI
+		}
+		cfg.auth = &mw
+	}
+}
+
+func (cfg routerConfig) authHandler() func(http.Handler) http.Handler {
+	if cfg.auth == nil {
+		return func(next http.Handler) http.Handler { return next }
+	}
+	return cfg.auth.Handler
 }
 
 // corsAllowedOrigins reads CORS_ALLOWED_ORIGINS (comma-separated), falling
