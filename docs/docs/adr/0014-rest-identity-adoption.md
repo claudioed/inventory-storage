@@ -11,7 +11,9 @@ description: "inventory-storage adopts warehouse-ops-agent ADR 0005: every REST 
 
 ## Status
 
-**Accepted.** 2026-09-07. Adoption record; the decision itself is
+**Superseded** by
+[15. Remove the fleet REST identity layer](./0015-remove-rest-identity-layer.md)
+(2026-09-09). Originally accepted 2026-09-07; the decision itself was
 [warehouse-ops-agent ADR 0005 — Fleet REST identity: static bearer keys
 with read/read-write scopes, no IdP](https://github.com/claudioed/warehouse-ops-agent/blob/develop/docs/docs/adr/0005-rest-identity-static-bearer-scopes.md).
 

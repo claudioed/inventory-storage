@@ -14,8 +14,6 @@ spec:
       app.kubernetes.io/component: mcp
   template:
     metadata:
-      annotations:
-        checksum/mcp-secret: {{ include (print $.Template.BasePath "/mcp-secret.yaml") . | sha256sum }}
       labels:
         {{- include "inventory-storage.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: mcp
@@ -71,25 +69,10 @@ spec:
             - name: REPORTS_BASE_URL
               value: "http://{{ include "inventory-storage.reportsFullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.analytics.reports.service.port }}"
             {{- end }}
-            # Static bearer keys (ADR-0008). Absent keys mean the server
-            # rejects every request (fail closed) — never "open to everyone".
-            - name: MCP_READ_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "inventory-storage.mcpSecretName" . }}
-                  key: MCP_READ_KEY
-                  optional: true
-            - name: MCP_READWRITE_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "inventory-storage.mcpSecretName" . }}
-                  key: MCP_READWRITE_KEY
-                  optional: true
             {{- range .Values.mcp.extraEnv }}
             - {{ toYaml . | nindent 14 | trim }}
             {{- end }}
-          # GET /healthz is served unauthenticated by cmd/mcp, so the probes
-          # need no bearer key.
+          # GET /healthz is served by cmd/mcp, so the probes have a cheap target.
           livenessProbe:
             httpGet:
               path: /healthz

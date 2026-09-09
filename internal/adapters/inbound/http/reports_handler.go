@@ -9,7 +9,6 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/riandyrn/otelchi"
 
-	"github.com/claudioed/inventory-storage/internal/adapters/inbound/auth"
 	"github.com/claudioed/inventory-storage/internal/analytics/report"
 )
 
@@ -156,11 +155,6 @@ func NewReportsRouter(h *ReportsHandlers, logger *slog.Logger, serviceName strin
 	for _, o := range opts {
 		o(&cfg)
 	}
-	// The reports surface is read-only: every route requires the read
-	// scope regardless of method (ADR-0014).
-	if cfg.auth != nil {
-		cfg.auth.Required = func(*http.Request) auth.Scope { return auth.ScopeRead }
-	}
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -175,11 +169,8 @@ func NewReportsRouter(h *ReportsHandlers, logger *slog.Logger, serviceName strin
 	r.Use(middleware.Recoverer)
 
 	r.Get("/healthz", h.GetReportsHealthz)
-	r.Group(func(r chi.Router) {
-		r.Use(cfg.authHandler())
-		r.Get("/reports/flow-accuracy", h.GetFlowAccuracy)
-		r.Get("/reports/flow-accuracy/freshness", h.GetFreshness)
-	})
+	r.Get("/reports/flow-accuracy", h.GetFlowAccuracy)
+	r.Get("/reports/flow-accuracy/freshness", h.GetFreshness)
 
 	return r
 }

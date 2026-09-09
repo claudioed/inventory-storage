@@ -14,7 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/claudioed/inventory-storage/internal/adapters/inbound/auth"
 	inboundhttp "github.com/claudioed/inventory-storage/internal/adapters/inbound/http"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/events"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/facilitycache"
@@ -127,7 +126,7 @@ func run() error {
 
 	httpServer := &http.Server{
 		Addr:              httpAddr,
-		Handler:           inboundhttp.NewRouter(server, logger, serviceName, inboundhttp.WithAuth(buildAuth(logger))),
+		Handler:           inboundhttp.NewRouter(server, logger, serviceName),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -315,7 +314,7 @@ func buildLocationLookup(ctx context.Context, mode, facilityLayoutBaseURL string
 
 	case strings.EqualFold(mode, "http"):
 		logger.Info("location classification lookup configured", "mode", "http", "facility_layout_base_url", facilityLayoutBaseURL)
-		return facilitylayout.NewClient(facilityLayoutBaseURL, nil).WithBearer(os.Getenv("FACILITY_LAYOUT_API_KEY")), func() {}, nil
+		return facilitylayout.NewClient(facilityLayoutBaseURL, nil), func() {}, nil
 
 	default:
 		return facilitylayout.NewPermissiveLookup(), func() {}, nil
@@ -327,25 +326,4 @@ func getenv(key, fallback string) string {
 		return v
 	}
 	return fallback
-}
-
-// buildAuth assembles the fleet REST identity middleware (ADR-0014,
-// warehouse-ops-agent ADR 0005) from API_READ_KEY / API_READWRITE_KEY (with
-// MCP_READ_KEY / MCP_READWRITE_KEY as fallback) and AUTH_MODE. Default mode
-// is enforce when any key is configured and off -- with a loud WARN -- when
-// none is, so a bare `go run` keeps working and a cluster never silently
-// runs open once keys exist.
-func buildAuth(logger *slog.Logger) auth.Middleware {
-	keys := auth.KeysFromEnv(os.Getenv)
-	authn := auth.NewStaticKeyAuth(keys)
-	defaultMode := auth.ModeOff
-	if authn.HasKeys() {
-		defaultMode = auth.ModeEnforce
-	}
-	mode := auth.ParseMode(os.Getenv("AUTH_MODE"), defaultMode)
-	if mode == auth.ModeOff {
-		logger.Warn("REST auth is OFF: no API_READ_KEY/API_READWRITE_KEY configured or AUTH_MODE=off")
-	}
-	logger.Info("REST auth configured", "mode", string(mode), "keys", len(keys))
-	return auth.Middleware{Authn: authn, Mode: mode, Logger: logger}
 }
