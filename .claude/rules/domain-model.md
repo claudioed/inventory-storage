@@ -1,0 +1,133 @@
+# Domain model: ubiquitous language, aggregates, events, use cases
+
+## Ubiquitous Language (use these exact names)
+
+- **StockUnit** — a quantity of a SKU at a specific Bin. Every physical item
+  has exactly one known bin OR is flagged Unlocated (lost). This is the core
+  rule.
+- **Bin / Location** — a coded slot. Chaotic storage: any SKU may occupy any
+  free bin; capacity must not be exceeded.
+- **Stow** — placing inbound stock into a bin. INVALID without BOTH an
+  item-scan and a location-scan (this is precisely how inventory gets lost
+  if skipped).
+- **Usable inventory** — stock immediately available to fulfil (on-hand minus
+  active reservations minus held/damaged). Usable, not total, is what
+  constrains release. Expose this explicitly.
+- **Reservation** — a REVOCABLE binding of a quantity to demand, with a
+  timeout. Physical delivery can fail (pod blocked, tote lost, chute jam,
+  short pick), so a reservation must be releasable and re-allocatable
+  against a different holding.
+- **Cycle count** — verify a bin's contents; reconcile discrepancies; may
+  flag Unlocated.
+- **ProductClassification** — SKU-level master data (independent of any
+  bin): a closed set of `HandlingTag`s (`Hazmat`, `Fragile`,
+  `TemperatureSensitive`, `Oversized`, `HighValue`) plus a `TemperatureClass`
+  (`Ambient`/`Chilled`/`Frozen`), required only when `TemperatureSensitive`
+  is set. This service is the source of truth. Unclassified SKUs carry no
+  constraints (fail-open).
+- **HandlingTag** — one of the five closed classification values above. Not
+  an open tag set like `facility-layout`'s `LocationType` — these carry real
+  regulatory/physical meaning, so the enum is deliberately closed.
+- **DOTHazardClass** — an optional US DOT hazard class (1-9, grounded in
+  49 CFR §177.848), meaningful only when `HandlingTag.Hazmat` is set but
+  still OPTIONAL even then (nullable, for backward compat with
+  already-classified hazmat SKUs that predate this field). Drives the
+  same-bin segregation check below. See ADR-0010 (`docs/docs/adr/`) for the
+  derived 9×9 class-level incompatibility matrix and its 4 documented
+  simplification rules (division→class collapse, X-and-O both treated as
+  incompatible for a single bin, Class 1 maximally restrictive, Class 9
+  broadly compatible).
+
+## Aggregates & invariants (enforce in domain, unit-tested)
+
+- **StockUnit**: quantity >= 0; a stow requires item + location; state
+  transitions Available -> Reserved -> Picked/Removed, or -> Unlocated. No
+  negative usable.
+- **Bin/Location**: sum(stock qty in bin) <= capacity; a full bin rejects
+  stow.
+- **Reservation**: reserved qty <= usable qty at reserve time; expires after
+  timeout; revoke() returns quantity to usable; cannot double-consume.
+- **ProductClassification**: `TemperatureSensitive` requires a non-empty,
+  valid `TemperatureClass`; absence of `TemperatureSensitive` means
+  `TemperatureClass` must be empty. `DOTHazardClass` (1-9) is optional even
+  when `Hazmat` is set. `StowStock` enforces placement rules for classified
+  SKUs by reading the target bin's zone attributes from `facility-layout`
+  (Hazmat SKU requires a hazmat-rated zone; `TemperatureSensitive` SKU
+  requires a matching zone `TemperatureClass`) — see ADR-0009. It ALSO
+  enforces same-bin DOT segregation (ADR-0010): a hazmat SKU with a
+  `DOTHazardClass` is rejected if the target bin already holds a SKU whose
+  class is `Incompatible` per the 9×9 matrix — this check is purely LOCAL
+  (StockRepo + ProductClassificationRepo, no cross-context call).
+  **Fail-open** for unclassified SKUs, unknown/unmodeled bins, and
+  unclassified occupants; **fail-closed** only when a classified SKU's zone
+  lookup genuinely fails (`ErrLocationClassificationUnavailable`).
+- Read models (usable-by-SKU, bin occupancy) are PROJECTIONS from events.
+
+## Domain events (past tense)
+
+StockReceived, ItemStowed, LocationRecorded, StockReserved,
+ReservationExpired, ReservationRevoked, StockPicked, ItemUnlocated,
+CycleCountCompleted, DiscrepancyDetected, ProductClassified — eleven total,
+raised by four aggregates (StockUnit, Reservation, Bin/Location,
+ProductClassification). Only **StockReserved** and **ReservationRevoked**
+currently cross the service boundary via Kafka — see `integration-events.md`.
+
+## Use cases (application layer)
+
+1. `ReceiveStock(sku, qty)` -> staged stock awaiting stow
+2. `StowStock(sku, qty, binId)` -> validates item+location scan, respects
+   capacity, enforces hazmat/temperature placement rules AND same-bin DOT
+   segregation for classified SKUs
+3. `ReserveStock(sku, qty, demandRef)` -> revocable Reservation against
+   usable
+4. `RevokeReservation(reservationId)` -> returns qty to usable
+5. `ConfirmPick(reservationId)` -> consumes reservation, StockPicked
+6. `GetUsable(sku)` -> usable-inventory read model
+7. `RunCycleCount(binId, countedQty)` -> reconcile, may raise
+   Discrepancy/Unlocated
+8. `ClassifyProduct(sku, handlingTags, temperatureClass?, dotHazardClass?)`
+   -> registers/replaces a SKU's ProductClassification (this service is the
+   source of truth)
+
+## Design notes (from README)
+
+- **Reservation is SKU-scoped, not bin-scoped.** `ReserveStock` draws from
+  whichever `StockUnit`s have usable quantity (first-fit across bins) and
+  records exactly which units/quantities it drew from as `Allocation`s on
+  the `Reservation`. `RevokeReservation` returns quantity to those same
+  units, but because a fresh `ReserveStock` call is free to draw from any
+  unit with usable quantity, a subsequent reservation can be satisfied from
+  a **different physical holding** — this is what makes a reservation
+  revocable without stranding an order when a specific pick fails.
+- **StockUnit lifecycle**: `AVAILABLE` -> `RESERVED` (any reserved quantity
+  present) -> `PICKED` (physically removed, quantity remains) or `REMOVED`
+  (quantity reached zero), or -> `UNLOCATED` (cycle count could not account
+  for it). `Usable = on-hand - reserved`, and is zero for `UNLOCATED` /
+  `REMOVED` units.
+- **ReceiveStock does not create a `StockUnit`.** A `StockUnit` requires
+  both a SKU and a Bin (item-scan + location-scan) by construction — that is
+  the domain's stow-requires-both invariant. Receiving stages goods
+  (publishes `StockReceived`) without persisting an aggregate; the durable
+  record starts at `StowStock`.
+- **Cycle count shortfall** marks whichever `StockUnit`s cover the shortfall
+  fully `UNLOCATED` (not split into located/lost sub-quantities), publishing
+  `ItemUnlocated` per unit touched, kept simple by design. An overage is
+  reported as a `DiscrepancyDetected`/`CycleCountCompleted(discrepancy=true)`
+  pair for a separate receiving/audit process to reconcile.
+
+## One honest gap: nothing sweeps expirations yet
+
+`ReservationExpired` and `Reservation.Expire()` exist in the domain and are
+unit-tested, but **no use case calls `Expire()` and nothing publishes
+`ReservationExpired` today** — there is no background sweeper. The timeout
+is still enforced, just lazily and at a different point:
+
+- `Reservation.Confirm(now)` returns `ErrExpired` past `expiresAt`, so a
+  timed-out reservation can never be confirmed into a pick;
+- a timed-out reservation's status remains `ACTIVE` in storage, so
+  `RevokeReservation` still accepts it and returns its quantity to usable.
+
+The practical consequence is that a reservation nobody revokes keeps holding
+quantity out of usable until someone calls `DELETE /reservations/{id}`. A
+sweeper that periodically expires and releases them is a real gap, listed
+here rather than papered over.
