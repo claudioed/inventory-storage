@@ -64,7 +64,6 @@
     "webpack-dev-server": "^5.2.6",
     "sockjs": "^0.3.24",
     "qs": "^6.16.0",
-    "@faker-js/faker": "10.6.0",
     "image-size": "2.0.2"
   }
 }
