@@ -7,7 +7,9 @@
     "dev": "vite --port 5182",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "preview": "vite preview --port 5182"
+    "preview": "vite preview --port 5182",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@warehouse/ui-kit": "file:../../warehouse-ui-kit",
@@ -24,6 +26,7 @@
     "oxlint": "^1.79.0",
     "playwright": "^1.62.1",
     "typescript": "~6.0.2",
-    "vite": "^8.2.2"
+    "vite": "^8.2.2",
+    "vitest": "^5.0.0"
   }
 }
