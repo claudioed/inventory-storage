@@ -103,12 +103,13 @@ Fully qualified name of the MCP server deployment/service (ADR-0008).
 {{- end }}
 
 {{/*
-Name of the Secret holding the MCP bearer keys, when the chart creates its own.
+Fully qualified name of the frontend Module Federation remote deployment/service.
+
+The remote is served by its own nginx pod and reached through warehouse-infra's
+Nginx web gateway at /mfes/inventory-storage/. It is deliberately a separate
+workload from the API: Kong never routes to it, and the OLTP Service must never
+select it.
 */}}
-{{- define "inventory-storage.mcpSecretName" -}}
-{{- if .Values.mcp.existingSecret }}
-{{- .Values.mcp.existingSecret }}
-{{- else }}
-{{- include "inventory-storage.fullname" . }}-mcp
-{{- end }}
+{{- define "inventory-storage.frontendFullname" -}}
+{{- include "inventory-storage.fullname" . }}-frontend
 {{- end }}

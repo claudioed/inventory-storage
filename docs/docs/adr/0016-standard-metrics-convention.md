@@ -1,9 +1,9 @@
 ---
-id: 0013-standard-metrics-convention
-slug: /adr/0013-standard-metrics-convention
-title: 0013. Standard metrics convention across the fleet
-sidebar_label: 0013. Standard metrics convention
-sidebar_position: 13
+id: 0016-standard-metrics-convention
+slug: /adr/0016-standard-metrics-convention
+title: 0016. Standard metrics convention across the fleet
+sidebar_label: 0016. Standard metrics convention
+sidebar_position: 16
 description: Fleet-wide decision establishing a mandatory Tier 1 telemetry baseline and a Tier 2 business-metric naming convention; this service is already compliant and serves as the reference implementation for inventory.reservations and telemetry.Setup.
 ---
 

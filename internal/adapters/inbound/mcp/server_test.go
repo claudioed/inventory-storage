@@ -2,7 +2,6 @@ package mcp_test
 
 import (
 	"context"
-	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -16,23 +15,6 @@ import (
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 	"github.com/claudioed/inventory-storage/internal/domain/stock"
 )
-
-const readKey = "test-read-key"
-const writeKey = "test-write-key"
-
-// bearerTransport adds a fixed Authorization header to every request, so the
-// in-process MCP client authenticates like a real one.
-type bearerTransport struct {
-	token string
-	base  http.RoundTripper
-}
-
-func (b bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	if b.token != "" {
-		r.Header.Set("Authorization", "Bearer "+b.token)
-	}
-	return b.base.RoundTrip(r)
-}
 
 // seed builds in-memory repos with one stowed StockUnit (SKU-A@BIN-1, qty 10)
 // and one reservation of qty 4 against it, and returns the repos, the reserve
@@ -62,8 +44,8 @@ func seed(t *testing.T) (*memory.StockRepo, *memory.ReservationRepo, *events.Buf
 	return stockRepo, reservationRepo, publisher, clock, res.ID()
 }
 
-// newServer builds a real MCP HTTP server over the seeded repos with a
-// read-only key, and returns its httptest URL.
+// newServer builds a real MCP HTTP server over the seeded repos, and returns
+// its httptest URL.
 func newServer(t *testing.T) string {
 	t.Helper()
 	stockRepo, _, _, _, _ := seed(t)
@@ -72,14 +54,14 @@ func newServer(t *testing.T) string {
 		Stock:     stockRepo,
 	}
 	server := inboundmcp.NewServer(deps)
-	auth := inboundmcp.NewStaticKeyAuth(map[string]inboundmcp.Scope{readKey: inboundmcp.ScopeRead})
-	httpSrv := httptest.NewServer(inboundmcp.Handler(server, auth))
+	httpSrv := httptest.NewServer(inboundmcp.Handler(server))
 	t.Cleanup(httpSrv.Close)
 	return httpSrv.URL
 }
 
-// newWriteServer builds a server with both a read and a read-write key over
-// the seeded repos, and returns the URL plus the revocable reservation's id.
+// newWriteServer builds a server with the revoke_reservation write tool
+// wired over the seeded repos, and returns the URL plus the revocable
+// reservation's id.
 func newWriteServer(t *testing.T) (string, string) {
 	t.Helper()
 	stockRepo, reservationRepo, publisher, clock, resID := seed(t)
@@ -89,22 +71,15 @@ func newWriteServer(t *testing.T) (string, string) {
 		Stock:             stockRepo,
 	}
 	server := inboundmcp.NewServer(deps)
-	auth := inboundmcp.NewStaticKeyAuth(map[string]inboundmcp.Scope{
-		readKey:  inboundmcp.ScopeRead,
-		writeKey: inboundmcp.ScopeReadWrite,
-	})
-	httpSrv := httptest.NewServer(inboundmcp.Handler(server, auth))
+	httpSrv := httptest.NewServer(inboundmcp.Handler(server))
 	t.Cleanup(httpSrv.Close)
 	return httpSrv.URL, resID
 }
 
-func connect(t *testing.T, url, token string) *sdk.ClientSession {
+func connect(t *testing.T, url string) *sdk.ClientSession {
 	t.Helper()
 	client := sdk.NewClient(&sdk.Implementation{Name: "test-client", Version: "0.0.1"}, nil)
-	transport := &sdk.StreamableClientTransport{
-		Endpoint:   url,
-		HTTPClient: &http.Client{Transport: bearerTransport{token: token, base: http.DefaultTransport}},
-	}
+	transport := &sdk.StreamableClientTransport{Endpoint: url}
 	session, err := client.Connect(context.Background(), transport, nil)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -113,24 +88,9 @@ func connect(t *testing.T, url, token string) *sdk.ClientSession {
 	return session
 }
 
-func TestServer_UnauthenticatedIsRejected(t *testing.T) {
-	url := newServer(t)
-	resp, err := http.Post(url, "application/json", nil)
-	if err != nil {
-		t.Fatalf("post: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", resp.StatusCode)
-	}
-	if got := resp.Header.Get("WWW-Authenticate"); got == "" {
-		t.Fatal("missing WWW-Authenticate challenge on 401")
-	}
-}
-
 func TestServer_ToolsListAndCall(t *testing.T) {
 	url := newServer(t)
-	session := connect(t, url, readKey)
+	session := connect(t, url)
 	ctx := context.Background()
 
 	tools, err := session.ListTools(ctx, nil)
@@ -171,7 +131,7 @@ func TestServer_ToolsListAndCall(t *testing.T) {
 
 func TestServer_CallToolRejectsEmptySKU(t *testing.T) {
 	url := newServer(t)
-	session := connect(t, url, readKey)
+	session := connect(t, url)
 	res, err := session.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      "check_availability",
 		Arguments: map[string]any{"sku": ""},
@@ -186,7 +146,7 @@ func TestServer_CallToolRejectsEmptySKU(t *testing.T) {
 
 func TestServer_ResourceRead(t *testing.T) {
 	url := newServer(t)
-	session := connect(t, url, readKey)
+	session := connect(t, url)
 	res, err := session.ReadResource(context.Background(), &sdk.ReadResourceParams{
 		URI: "inventory://SKU-A/usable",
 	})
@@ -200,7 +160,7 @@ func TestServer_ResourceRead(t *testing.T) {
 
 func TestServer_PromptGet(t *testing.T) {
 	url := newServer(t)
-	session := connect(t, url, readKey)
+	session := connect(t, url)
 	res, err := session.GetPrompt(context.Background(), &sdk.GetPromptParams{Name: "triage_low_stock"})
 	if err != nil {
 		t.Fatalf("get prompt: %v", err)
@@ -210,24 +170,9 @@ func TestServer_PromptGet(t *testing.T) {
 	}
 }
 
-func TestServer_RevokeReservationDeniedForReadOnlyKey(t *testing.T) {
+func TestServer_RevokeReservationSucceeds(t *testing.T) {
 	url, resID := newWriteServer(t)
-	session := connect(t, url, readKey) // read-only key
-	res, err := session.CallTool(context.Background(), &sdk.CallToolParams{
-		Name:      "revoke_reservation",
-		Arguments: map[string]any{"reservationId": resID},
-	})
-	if err != nil {
-		t.Fatalf("call tool transport error: %v", err)
-	}
-	if !res.IsError {
-		t.Fatal("revoke_reservation with a read-only key must be denied (scope gate)")
-	}
-}
-
-func TestServer_RevokeReservationSucceedsForWriteKey(t *testing.T) {
-	url, resID := newWriteServer(t)
-	session := connect(t, url, writeKey) // read-write key
+	session := connect(t, url)
 	res, err := session.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      "revoke_reservation",
 		Arguments: map[string]any{"reservationId": resID},
@@ -236,7 +181,7 @@ func TestServer_RevokeReservationSucceedsForWriteKey(t *testing.T) {
 		t.Fatalf("call tool: %v", err)
 	}
 	if res.IsError {
-		t.Fatalf("revoke_reservation with write key returned error: %+v", res.Content)
+		t.Fatalf("revoke_reservation returned error: %+v", res.Content)
 	}
 	revoked, ok := res.StructuredContent.(map[string]any)["revoked"]
 	if !ok || revoked != true {

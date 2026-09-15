@@ -167,12 +167,12 @@ func GetFlowAccuracyReportForTest(ctx context.Context, client ReportsClient, in 
 // report tool. It is registered only when a reports client is configured
 // (Deps.Reports != nil), so an MCP deployment without the reports service
 // simply does not expose it.
-func (d Deps) registerReportTool(server *mcp.Server, scopeOf func(context.Context) Scope) {
+func (d Deps) registerReportTool(server *mcp.Server) {
 	if d.Reports == nil {
 		return
 	}
 	readOnly := true
-	addTool(server, scopeOf, ScopeRead, &mcp.Tool{
+	addTool(server, &mcp.Tool{
 		Name:        "get_inventory_flow_accuracy_report",
 		Description: "Return the Inventory Flow & Accuracy report (received/stowed/picked quantities, reservations created/expired/revoked, cycle-count completions, discrepancies, and unlocated items) for a time window, optionally filtered by SKU or bin. Reads via the inventory-reports REST service.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly},

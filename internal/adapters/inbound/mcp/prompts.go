@@ -27,7 +27,7 @@ Escalate to a human when: usable stays low after revoking clearly-failed reserva
 Done means: for each SKU you have reported its usable quantity, the bin-level reason for any shortfall (reserved vs unlocated), and either the reservations you revoked (with why each was a confirmed failure) or an explicit escalation. Revoking a reservation is the only state change permitted here; never revoke live demand.`
 
 // registerPrompts adds the workflow prompts (operational SOPs).
-func (d Deps) registerPrompts(server *mcp.Server, _ func(context.Context) Scope) {
+func (d Deps) registerPrompts(server *mcp.Server) {
 	server.AddPrompt(&mcp.Prompt{
 		Name:        "triage_low_stock",
 		Description: "Standard operating procedure for triaging low or blocked usable inventory using the inventory-storage MCP tools.",

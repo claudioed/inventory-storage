@@ -5,7 +5,6 @@ import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import Layout from '@theme/Layout';
 import Heading from '@theme/Heading';
 
-import HomepageFeatures from '@site/src/components/HomepageFeatures';
 import styles from './index.module.css';
 
 function StudyDisclaimer() {
@@ -71,7 +70,6 @@ export default function Home(): ReactNode {
       description="Documentation for the Inventory & Storage bounded context: chaotic stow, bin-accurate location, revocable reservations and usable inventory.">
       <HomepageHeader />
       <main>
-        <HomepageFeatures />
         <section className={styles.invariant}>
           <div className="container">
             <blockquote className={styles.invariantQuote}>

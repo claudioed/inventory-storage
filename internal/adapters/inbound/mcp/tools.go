@@ -110,32 +110,30 @@ func (d Deps) revokeReservation(ctx context.Context, in revokeReservationInput) 
 // --- registration -------------------------------------------------------------
 
 // registerTools adds every tool to the server, each wrapped so its handler
-// runs inside an OTel span named "mcp.tool <name>" and is gated by the
-// session's scope. Read tools require ScopeRead; write tools require
-// ScopeReadWrite.
-func (d Deps) registerTools(server *mcp.Server, scopeOf func(context.Context) Scope) {
+// runs inside an OTel span named "mcp.tool <name>".
+func (d Deps) registerTools(server *mcp.Server) {
 	readOnly := true
 
-	addTool(server, scopeOf, ScopeRead, &mcp.Tool{
+	addTool(server, &mcp.Tool{
 		Name:        "check_availability",
 		Description: "Return the usable quantity for a SKU: on-hand across all its bins minus active reservations and held/unlocated stock. Usable, not total, is what constrains a release.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly},
 	}, d.checkAvailability)
 
-	addTool(server, scopeOf, ScopeRead, &mcp.Tool{
+	addTool(server, &mcp.Tool{
 		Name:        "get_bin_occupancy",
 		Description: "Return what a single bin holds: its total on-hand, reserved, and usable quantities, plus a per-StockUnit breakdown (SKU, quantities, state).",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly},
 	}, d.getBinOccupancy)
 
 	// Write tool: revokes a reservation, returning its quantity to usable.
-	// Requires the read-write scope and is annotated destructive (non-read-
-	// only) so a host can see it changes state before letting a model call
-	// it. Revocation is revocable by design — it never strands or consumes
-	// stock — which bounds the risk of a mistaken call.
+	// Annotated destructive (non-read-only) so a host can see it changes
+	// state before letting a model call it. Revocation is revocable by
+	// design — it never strands or consumes stock — which bounds the risk
+	// of a mistaken call.
 	destructive := true
 	notIdempotent := false
-	addTool(server, scopeOf, ScopeReadWrite, &mcp.Tool{
+	addTool(server, &mcp.Tool{
 		Name:        "revoke_reservation",
 		Description: "Revoke a reservation, returning its bound quantity to usable inventory so a failed physical delivery never strands an order. Rejected if the reservation is not found or already revoked.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &destructive, IdempotentHint: notIdempotent},
@@ -143,17 +141,14 @@ func (d Deps) registerTools(server *mcp.Server, scopeOf func(context.Context) Sc
 
 	// Curated read-only analytics report tool, registered only when a reports
 	// client is wired (Deps.Reports != nil).
-	d.registerReportTool(server, scopeOf)
+	d.registerReportTool(server)
 }
 
-// addTool registers one scope-gated tool. It centralises the cross-cutting
-// concerns every tool shares: a span per call, scope enforcement against the
-// tool's required minimum scope, and mapping a handler error onto the span
-// before returning it.
+// addTool registers one tool. It centralises the cross-cutting concerns
+// every tool shares: a span per call and mapping a handler error onto the
+// span before returning it.
 func addTool[In, Out any](
 	server *mcp.Server,
-	scopeOf func(context.Context) Scope,
-	required Scope,
 	tool *mcp.Tool,
 	handle func(context.Context, In) (Out, error),
 ) {
@@ -162,16 +157,9 @@ func addTool[In, Out any](
 		ctx, span := otel.Tracer(tracerName).Start(ctx, "mcp.tool "+tool.Name,
 			trace.WithAttributes(
 				attribute.String("mcp.tool.name", tool.Name),
-				attribute.String("mcp.tool.required_scope", string(required)),
 			),
 		)
 		defer span.End()
-
-		if !scopeAllows(scopeOf(ctx), required) {
-			err := fmt.Errorf("tool %q requires %s scope", tool.Name, required)
-			span.SetStatus(codes.Error, "unauthorized")
-			return nil, zero, err
-		}
 
 		out, err := handle(ctx, in)
 		if err != nil {

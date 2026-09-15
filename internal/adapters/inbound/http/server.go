@@ -59,12 +59,16 @@ const defaultCORSAllowedOrigins = "http://localhost:5173,http://localhost:5182"
 // is what lets the telemetry slog handler stamp trace_id/span_id onto it.
 // WithChiRoutes resolves the route pattern up front, so spans are named
 // "/reservations/{id}" rather than one distinct name per reservation id.
-func NewRouter(s *Server, logger *slog.Logger, serviceName string) http.Handler {
+func NewRouter(s *Server, logger *slog.Logger, serviceName string, opts ...RouterOption) http.Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if serviceName == "" {
 		serviceName = DefaultServiceName
+	}
+	var cfg routerConfig
+	for _, o := range opts {
+		o(&cfg)
 	}
 
 	r := chi.NewRouter()
@@ -80,9 +84,8 @@ func NewRouter(s *Server, logger *slog.Logger, serviceName string) http.Handler 
 	// Allows browser SPAs on a different origin (e.g. the warehouse-console
 	// shell, or this service's own MFE remote) to call this API directly.
 	// CORS_ALLOWED_ORIGINS is comma-separated, defaulting to the two local
-	// dev origins. No credentials are needed — auth here is a static
-	// bearer key, not cookies, so the browser doesn't need cross-origin
-	// credentialed requests.
+	// dev origins. No credentials are needed — this API has no cookie-based
+	// auth, so the browser doesn't need cross-origin credentialed requests.
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   corsAllowedOrigins(),
 		AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete},
@@ -91,6 +94,7 @@ func NewRouter(s *Server, logger *slog.Logger, serviceName string) http.Handler 
 	}))
 
 	r.Get("/healthz", s.handleHealthz)
+
 	r.Post("/stock/receive", s.handleReceiveStock)
 	r.Post("/stock/stow", s.handleStowStock)
 	r.Post("/reservations", s.handleReserveStock)
@@ -104,6 +108,15 @@ func NewRouter(s *Server, logger *slog.Logger, serviceName string) http.Handler 
 
 	return r
 }
+
+// RouterOption customises NewRouter without widening its signature for
+// every caller. No options remain currently — the fleet REST identity
+// middleware that used to be the sole RouterOption was removed; this stays
+// as an empty extension point rather than breaking NewRouter's/
+// NewReportsRouter's signature.
+type RouterOption func(*routerConfig)
+
+type routerConfig struct{}
 
 // corsAllowedOrigins reads CORS_ALLOWED_ORIGINS (comma-separated), falling
 // back to defaultCORSAllowedOrigins for local dev when unset/empty.

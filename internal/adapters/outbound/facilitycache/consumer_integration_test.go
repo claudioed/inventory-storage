@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -30,10 +31,26 @@ import (
 // are slow to boot); isolation between tests comes from each one using its
 // own unique topic instead.
 
-var sharedBrokers []string
+var (
+	sharedBrokers   []string
+	sharedContainer testcontainers.Container
+)
 
-// startBroker boots a single Kafka container for the whole package and
-// returns its broker list. Subsequent calls reuse it.
+// TestMain owns the package-wide broker lifecycle. Per-test Cleanup would
+// tear it down after the first caller and defeat the intended single broker
+// shared by the unique-topic test cases.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if sharedContainer != nil {
+		if err := testcontainers.TerminateContainer(sharedContainer); err != nil {
+			fmt.Fprintf(os.Stderr, "terminate kafka container: %v\n", err)
+		}
+	}
+	os.Exit(code)
+}
+
+// startBroker boots one Kafka container for the whole package and returns its
+// broker list. Subsequent calls reuse it.
 func startBroker(t *testing.T) []string {
 	t.Helper()
 	if sharedBrokers != nil {
@@ -47,12 +64,7 @@ func startBroker(t *testing.T) []string {
 	if err != nil {
 		t.Fatalf("start kafka container: %v", err)
 	}
-	t.Cleanup(func() {
-		if err := testcontainers.TerminateContainer(container); err != nil {
-			t.Logf("terminate kafka container: %v", err)
-		}
-		sharedBrokers = nil
-	})
+	sharedContainer = container
 
 	brokers, err := container.Brokers(ctx)
 	if err != nil {

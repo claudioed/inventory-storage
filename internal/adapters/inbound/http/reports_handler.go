@@ -150,7 +150,11 @@ func writeReportInternal(w http.ResponseWriter, r *http.Request, err error) {
 // NewReportsRouter builds the chi router for the inventory-reports reader
 // service. A nil logger falls back to slog.Default(); an empty serviceName
 // falls back to DefaultServiceName.
-func NewReportsRouter(h *ReportsHandlers, logger *slog.Logger, serviceName string) http.Handler {
+func NewReportsRouter(h *ReportsHandlers, logger *slog.Logger, serviceName string, opts ...RouterOption) http.Handler {
+	var cfg routerConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
 	if logger == nil {
 		logger = slog.Default()
 	}

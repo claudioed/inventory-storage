@@ -18,20 +18,17 @@ const (
 	usableResourceSuffix = "/usable"
 )
 
-// registerResources adds the scoped read-model resource. Per the charter,
+// registerResources adds the read-model resource. Per the charter,
 // resources are bounded-context contracts tied to a decision, not bulk dumps:
 // the usable-inventory resource answers "how much of this one SKU is usable?"
 // for any SKU via an RFC 6570 URI template, backed by the GetUsable read model.
-func (d Deps) registerResources(server *mcp.Server, scopeOf func(context.Context) Scope) {
+func (d Deps) registerResources(server *mcp.Server) {
 	server.AddResourceTemplate(&mcp.ResourceTemplate{
 		URITemplate: usableResourceScheme + "{sku}" + usableResourceSuffix,
 		Name:        "usable inventory by SKU",
 		Description: "Usable quantity for a SKU: on-hand across all bins minus active reservations and held/unlocated stock.",
 		MIMEType:    "application/json",
 	}, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
-		if !scopeAllows(scopeOf(ctx), ScopeRead) {
-			return nil, fmt.Errorf("resource %q requires read scope", req.Params.URI)
-		}
 		skuValue, err := parseUsableURI(req.Params.URI)
 		if err != nil {
 			return nil, err
