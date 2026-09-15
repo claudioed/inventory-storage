@@ -84,6 +84,7 @@ const sidebars: SidebarsConfig = {
         'adr/0012-adopt-mfe-console-architecture',
         'adr/0013-location-classification-via-facility-events',
         'adr/0014-rest-identity-adoption',
+        'adr/0016-standard-metrics-convention',
       ],
     },
   ],
