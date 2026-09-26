@@ -179,7 +179,7 @@ required, which is why it runs in the default `go test ./...` suite.
 ## Deployment
 
 The service ships as a container (`Dockerfile` at the repo root, published to
-Docker Hub by the `docker-publish` CI job on `main`) and as a Helm chart
+GHCR by the `docker-publish` CI job on `main`) and as a Helm chart
 (`charts/inventory-storage`, linted by the `helm-lint` job). In the local
 Kubernetes stack its REST API is reached through Kong at
 `http://localhost:8000/api/inventory-storage`, and it runs inside the Istio

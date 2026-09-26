@@ -165,7 +165,7 @@ request:
 | `arch-test` | The hexagonal fitness tests above |
 | `web` | Lint, typecheck, test and build of the `web/` remote |
 | `trivy-scan` | Container image scan, blocking on fixable CRITICAL/HIGH (pull requests) |
-| `docker-publish` | Gated on `lint`, `test`, `bdd`, `integration`, `mutation-fast`, `vuln`, `api-lint`, `arch-test`; pushes to Docker Hub on `main` only |
+| `docker-publish` | Gated on `lint`, `test`, `bdd`, `integration`, `mutation-fast`, `vuln`, `api-lint`, `arch-test`; pushes to GHCR on `main` only |
 
 This documentation site is built and deployed by a separate workflow,
 `.github/workflows/docs.yml`, which never touches `ci.yml`.
