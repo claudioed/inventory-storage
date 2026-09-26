@@ -148,6 +148,97 @@ func TestReserveStock_EventPublishFails_PropagatesError(t *testing.T) {
 	}
 }
 
+// Named invariant: a retried request against the same demandRef must not
+// double-reserve stock or create a second Reservation row — this is the
+// idempotency guard flagged as a follow-up in REST_AUDIT.md and fixed here.
+func TestReserveStock_SameDemandRefRetried_ReturnsSameReservation_NoDoubleReserve(t *testing.T) {
+	e := newEnv()
+	stowUnit(t, e, "SKU-1", "A-1-1", 10, 10)
+	uc := &usecases.ReserveStock{Stock: e.Stock, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
+
+	first, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 6), "order-retry-1")
+	if err != nil {
+		t.Fatalf("unexpected error on first call: %v", err)
+	}
+
+	// Simulate a client-side retry after a dropped response: same
+	// demandRef, same call, no knowledge the first one succeeded.
+	second, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 6), "order-retry-1")
+	if err != nil {
+		t.Fatalf("unexpected error on retry: %v", err)
+	}
+
+	if second.ID() != first.ID() {
+		t.Fatalf("expected retry to return the same reservation ID, got first=%s second=%s", first.ID(), second.ID())
+	}
+
+	all, err := e.Reservations.FindByDemandRef(context.Background(), "order-retry-1")
+	if err != nil {
+		t.Fatalf("unexpected error listing reservations: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("expected exactly 1 reservation to exist for the demandRef after a retry, got %d", len(all))
+	}
+
+	// Usable must reflect only ONE reservation of 6, not two (i.e. not
+	// double-reserved): 10 stowed - 6 reserved = 4 usable.
+	usableUC := &usecases.GetUsable{Stock: e.Stock}
+	usable, err := usableUC.Execute(context.Background(), mustSKU(t, "SKU-1"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if usable.Usable.Int() != 4 {
+		t.Fatalf("expected usable=4 (stock reserved only once), got %d", usable.Usable.Int())
+	}
+}
+
+// A demandRef with only a REVOKED reservation must be treated as a genuine
+// new attempt, not a retry — the idempotency guard only short-circuits on
+// an unresolved (Active) reservation.
+func TestReserveStock_SameDemandRefAfterRevoke_CreatesNewReservation(t *testing.T) {
+	e := newEnv()
+	stowUnit(t, e, "SKU-1", "A-1-1", 10, 10)
+	reserveUC := &usecases.ReserveStock{Stock: e.Stock, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
+
+	first, err := reserveUC.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 6), "order-revoke-retry")
+	if err != nil {
+		t.Fatalf("unexpected error on first call: %v", err)
+	}
+
+	revokeUC := &usecases.RevokeReservation{Stock: e.Stock, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
+	if err := revokeUC.Execute(context.Background(), first.ID()); err != nil {
+		t.Fatalf("unexpected error revoking: %v", err)
+	}
+
+	second, err := reserveUC.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 3), "order-revoke-retry")
+	if err != nil {
+		t.Fatalf("unexpected error on new reserve after revoke: %v", err)
+	}
+	if second.ID() == first.ID() {
+		t.Fatalf("expected a genuinely new reservation after revoke, got the same ID %s", second.ID())
+	}
+
+	all, err := e.Reservations.FindByDemandRef(context.Background(), "order-revoke-retry")
+	if err != nil {
+		t.Fatalf("unexpected error listing reservations: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected 2 reservations (revoked + new), got %d", len(all))
+	}
+}
+
+func TestReserveStock_FindByDemandRefFails_PropagatesError(t *testing.T) {
+	e := newEnv()
+	stowUnit(t, e, "SKU-1", "A-1-1", 10, 10)
+	resRepo := &failingReservationRepo{delegate: e.Reservations, failFindByDemandRef: true}
+	uc := &usecases.ReserveStock{Stock: e.Stock, Reservations: resRepo, Events: e.Events, Clock: e.Clock}
+
+	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 6), "order-1")
+	if err != errFake {
+		t.Fatalf("expected errFake, got %v", err)
+	}
+}
+
 func TestReserveStock_CustomTimeout_Applied(t *testing.T) {
 	e := newEnv()
 	stowUnit(t, e, "SKU-1", "A-1-1", 10, 10)
