@@ -370,8 +370,9 @@ paths:
         draw from a different holding. This is what lets a failed physical
         pick be retried without stranding the order. The reservation
         expires automatically after a timeout if never confirmed or
-        revoked. Not idempotent: retrying this call after a dropped
-        response creates a second reservation for the same demandRef (see
+        revoked. Idempotent (best-effort) by demandRef: retrying this call
+        after a dropped response returns the existing ACTIVE reservation
+        for the same demandRef instead of creating a second one (see
         REST_AUDIT.md's idempotency notes).
       tags: [Reservations]
       requestBody:

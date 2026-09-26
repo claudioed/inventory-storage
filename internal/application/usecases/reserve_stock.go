@@ -33,6 +33,33 @@ func (uc *ReserveStock) Execute(ctx context.Context, sku shared.SKU, qty shared.
 		return nil, shared.ErrZeroQuantity
 	}
 
+	// Idempotency guard: a client-side retry after a dropped response
+	// (e.g. the first call's Reservation was created and stock allocated,
+	// but the response never reached the caller) must not create a
+	// second Reservation and double-reserve stock for the same
+	// demandRef. If an ACTIVE reservation already exists for this
+	// demandRef, treat this call as the retry and hand back that same
+	// reservation instead of allocating again. A demandRef legitimately
+	// has multiple reservations across its lifetime (revoke + retry), so
+	// this only short-circuits when an unresolved one is still open —
+	// once it's revoked/confirmed/expired, a new demandRef call is a
+	// genuine new reservation attempt, not a retry.
+	//
+	// This is a best-effort, not a hard uniqueness guarantee: two
+	// concurrent first-attempts for the same demandRef racing this check
+	// could still both pass it before either has saved. Closing that
+	// window would need a DB-level constraint; see
+	// REST_AUDIT.md's idempotency notes for the accepted scope here.
+	existing, err := uc.Reservations.FindByDemandRef(ctx, demandRef)
+	if err != nil {
+		return nil, err
+	}
+	for _, res := range existing {
+		if res.Status() == reservation.StatusActive {
+			return res, nil
+		}
+	}
+
 	units, err := uc.Stock.FindBySKU(ctx, sku)
 	if err != nil {
 		return nil, err
