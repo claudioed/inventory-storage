@@ -26,6 +26,18 @@ func (uc *RevokeReservation) Execute(ctx context.Context, reservationID string) 
 		return ErrReservationNotFound
 	}
 
+	// Lazy expiry: resolve a timed-out ACTIVE reservation here too, so a
+	// revoke attempt against one that has already timed out sees it as
+	// genuinely Expired (ErrAlreadyResolved) rather than silently
+	// succeeding a second, redundant release of its allocated quantity
+	// (expireIfDue already returned it to usable and raised
+	// ReservationExpired). An already-resolved reservation (Confirmed,
+	// Revoked, or Expired) passes through unchanged.
+	res, err = expireIfDue(ctx, uc.Stock, uc.Reservations, uc.Events, uc.Clock, res)
+	if err != nil {
+		return err
+	}
+
 	if err := res.Revoke(); err != nil {
 		return err
 	}
