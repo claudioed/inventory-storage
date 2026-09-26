@@ -26,6 +26,17 @@ func (uc *ConfirmPick) Execute(ctx context.Context, reservationID string) error 
 		return ErrReservationNotFound
 	}
 
+	// Lazy expiry: a pick confirmation is also a reservation lookup, so a
+	// reservation that has silently timed out (still ACTIVE in storage)
+	// is transitioned to Expired here, its quantity returned to usable,
+	// and ReservationExpired raised — Confirm(now) below then correctly
+	// rejects it via ErrAlreadyResolved rather than never discovering the
+	// timeout at all.
+	res, err = expireIfDue(ctx, uc.Stock, uc.Reservations, uc.Events, uc.Clock, res)
+	if err != nil {
+		return err
+	}
+
 	now := uc.Clock.Now()
 	if err := res.Confirm(now); err != nil {
 		return err

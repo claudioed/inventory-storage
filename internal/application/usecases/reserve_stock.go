@@ -54,6 +54,16 @@ func (uc *ReserveStock) Execute(ctx context.Context, sku shared.SKU, qty shared.
 	if err != nil {
 		return nil, err
 	}
+	// Lazy expiry: this is a read of every reservation ever created
+	// against demandRef, so it is a point where a timed-out ACTIVE
+	// reservation must be resolved before being reasoned about — a
+	// caller retrying against a demandRef whose only "active" match has
+	// actually timed out must fall through to a genuine new reservation
+	// attempt, not be handed back an expired one as if it were live.
+	existing, err = expireAllIfDue(ctx, uc.Stock, uc.Reservations, uc.Events, uc.Clock, existing)
+	if err != nil {
+		return nil, err
+	}
 	for _, res := range existing {
 		if res.Status() == reservation.StatusActive {
 			return res, nil
