@@ -1,14 +1,17 @@
 ---
 title: Context Map
 sidebar_label: Context Map
-description: The five warehouse-systems bounded contexts, what is actually wired between them, and the strategic relationships behind it.
+description: The warehouse-systems bounded contexts this service touches, what is actually wired between them, and the strategic relationships behind it.
 ---
 
 # Context Map
 
-Five Go services, one platform. This page shows what is **actually running**
-between them today, and separately what the strategic relationship is even
-where no wire exists.
+The platform has grown past the original five Go services (it now also
+includes `order-management`, `process-path-management`, `labor-performance`
+and `network-fulfillment`). This page shows the contexts that are **actually
+wired** to `inventory-storage` today, and separately what the strategic
+relationship is even where no wire exists. Contexts with no edge to this
+service are left off the diagram.
 
 ## The platform
 
@@ -16,6 +19,7 @@ where no wire exists.
 flowchart TB
     subgraph WMS["WMS tier — what &amp; where · minutes → days"]
         INV["<b>inventory-storage</b><br/>Core subdomain<br/>stock ledger · bin-accurate location<br/>revocable reservations · usable inventory"]
+        OM["<b>order-management</b><br/>order intake · allocation"]
     end
 
     subgraph WES["WES tier — when &amp; in what order · seconds → minutes"]
@@ -33,12 +37,14 @@ flowchart TB
     end
 
     INV ==>|"<b>warehouse.inventory.events</b><br/>StockReserved<br/>ReservationRevoked"| WP
+    FL ==>|"<b>warehouse.facility.events</b><br/>ZoneRegistered · LocationSlot*<br/>local cache, ADR-0013"| INV
     WM ==>|"<b>warehouse.workforce.events</b><br/>ShiftPlanCommitted"| WP
     WP ==>|"<b>warehouse.work-planning.events</b><br/>WorkReleased"| FE
     FE ==>|"<b>warehouse.fulfillment.events</b>"| WP
-    INV -.->|"<b>GET /locations/{code}/classification</b><br/>sync HTTP, scoped to<br/>Hazmat/TemperatureSensitive SKUs"| FL
-    FL -.->|"<i>no wiring today</i>"| WES
-    OA -.->|"<b>GET /reservations?demandRef=</b><br/>read-only, ADR-0012"| INV
+    OM -->|"<b>POST /reservations</b> · <b>DELETE /reservations/{id}</b><br/><b>GET /products/{sku}/classification</b>"| INV
+    WP -->|"<b>GET /products/{sku}/classification</b>"| INV
+    FE -->|"<b>GET /products/{sku}/classification</b>"| INV
+    OA -->|"<b>GET /reservations?demandRef=</b> · reports REST<br/>MCP tools · read-only, ADR-0012"| INV
 
     classDef this fill:#0f766e,stroke:#134e4a,color:#fff,stroke-width:4px;
     classDef core fill:#1e3a8a,stroke:#1e293b,color:#fff;
@@ -46,15 +52,17 @@ flowchart TB
     classDef gen fill:#475569,stroke:#94a3b8,color:#fff,stroke-dasharray: 6 4;
     classDef ops fill:#7c2d12,stroke:#431407,color:#fff,stroke-dasharray: 3 3;
     class INV this;
-    class WP,FE core;
+    class WP,FE,OM core;
     class WM supp;
     class FL gen;
     class OA ops;
 ```
 
-**Bold edges are live Kafka topics with a real publisher and a real consumer on
-each end.** Dashed edges are relationships that exist strategically and have no
-code behind them.
+**Thick edges are live Kafka topics with a real publisher and a real consumer on
+each end. Thin solid edges are synchronous HTTP calls** from the caller's own
+outbound adapter into this service's REST (or MCP) surface; each one is gated
+by a `*_MODE` env var in the caller that defaults to a no-network
+`permissive` stub.
 
 ## Verified integration inventory
 
@@ -67,22 +75,34 @@ repository, not against intent.
 | `workforce-management` | `warehouse.workforce.events` | `wes-work-planning` | ✅ |
 | `wes-work-planning` | `warehouse.work-planning.events` | `fulfillment-execution` | ✅ |
 | `fulfillment-execution` | `warehouse.fulfillment.events` | `wes-work-planning` | ✅ |
-| `facility-layout` | — | — | ❌ **no Kafka adapter exists** — only an in-process log publisher |
+| `facility-layout` | `warehouse.facility.events` | `inventory-storage` | ✅ publisher `facility-layout/internal/adapters/outbound/kafka/publisher.go`; consumer `internal/adapters/outbound/facilitycache/consumer.go` (ADR 0013) |
 
-`inventory-storage` has **no inbound Kafka consumer at all**. It publishes and
-serves HTTP; it subscribes to no topic. It does, since ADR 0009, make one
-**synchronous HTTP call outward**: `StowStock` reads
-`GET /locations/{locationCode}/classification` from `facility-layout` when
-stowing a SKU classified `Hazmat` or `TemperatureSensitive`, gated by
-`LOCATION_LOOKUP_MODE` (default `permissive`, i.e. off). This is a
-request/response dependency, not a message-bus one, and does not appear in
-the Kafka table above.
+`inventory-storage` consumes exactly **one** topic,
+`warehouse.facility.events`, and only to keep a local read model of zone
+classifications (hazmat rating, temperature class) keyed by location code.
+It is selected by `LOCATION_LOOKUP_MODE=kafka`; the binary's default is still
+`permissive` (no lookup at all), while the `warehouse-infra` cluster sets
+`kafka` (`deploy_facility_events_integration`, default `true`). The older
+synchronous `GET /locations/{locationCode}/classification` call
+(`LOCATION_LOOKUP_MODE=http`, ADR 0009) is retained as the rollback.
+
+### Synchronous HTTP edges into this service
+
+| Caller | Endpoint(s) | Caller-side switch |
+| --- | --- | --- |
+| `order-management` | `POST /reservations`, `DELETE /reservations/{id}` | `INVENTORY_STORAGE_MODE` + `INVENTORY_STORAGE_BASE_URL` |
+| `order-management`, `wes-work-planning`, `fulfillment-execution` | `GET /products/{sku}/classification` | `PRODUCT_CLASSIFICATION_MODE` + `INVENTORY_STORAGE_BASE_URL` |
+| `warehouse-ops-agent` | `GET /reservations?demandRef=`, `GET /reports/flow-accuracy[/freshness]`, MCP `check_availability` / `get_bin_occupancy` | `INVENTORY_STORAGE_REST_URL`, `INVENTORY_STORAGE_REPORTS_REST_URL`, `INVENTORY_STORAGE_MCP_ENDPOINT` |
+
+This service makes **no** outbound HTTP call in its default and cluster
+configurations; the only outbound HTTP client it has is the `http` rollback
+mode of the facility-layout lookup above.
 
 ## This service's edges
 
 ### → `wes-work-planning` (live)
 
-The only integration this service participates in. Full technical detail —
+The only consumer of this service's integration topic. Full technical detail —
 envelope, payloads, smoke test — is on the
 [Integration](./integration.md) page.
 
@@ -105,11 +125,13 @@ concept of a bin.
 
 ### ↔ `fulfillment-execution` (indirect)
 
-No direct edge, by design. `fulfillment-execution` needs *work*, not stock
-truth; it consumes `WorkReleased` from Work Planning. When a pick physically
-completes, the accounting consequence arrives here as a deliberate
-`POST /reservations/{id}/confirm-pick` command — a request with an
-identity and an authorisation, not an event this service happens to overhear.
+No event edge, by design. `fulfillment-execution` needs *work*, not stock
+truth; it consumes `WorkReleased` from Work Planning. Its only call into this
+service is a read of `GET /products/{sku}/classification` (gated by its own
+`PRODUCT_CLASSIFICATION_MODE`). The intended way for a physical pick to reach
+this ledger is a deliberate `POST /reservations/{id}/confirm-pick` command —
+not an event this service happens to overhear. No sibling repository calls
+`confirm-pick` today; it is exercised by this service's own API and tests.
 
 That distinction matters: consuming a `PickCompleted` event would make this
 service's ledger a *follower* of another context's execution stream. Requiring
@@ -132,34 +154,49 @@ fleet's micro-frontend console architecture): this service ships
 this service's own REST API, plus one additive read,
 `GET /reservations?demandRef=`, that closes the join-key gap ADR-0002
 identified. `warehouse-ops-agent`'s BFF calls that same endpoint as one leg
-of its cross-service Order Lifecycle fan-out. This is a **read-only,
-inbound HTTP edge** — the browser (via `inventory-mfe`) and the BFF are
-callers of this service's existing REST surface, not a new dependency this
+of its cross-service Order Lifecycle fan-out, and also reads the
+Flow & Accuracy report REST and the MCP server's read tools. This is a
+**read-only, inbound edge** — the browser (via `inventory-mfe`) and the BFF
+are callers of this service's existing surfaces, not a new dependency this
 service takes on anything else. CORS middleware (`CORS_ALLOWED_ORIGINS`) is
 the only new surface this adoption added; no domain model, aggregate, or
 pre-existing endpoint changed.
 
-### ← `facility-layout` (partial: live synchronous read, no event wiring)
+### ← `order-management` (live, synchronous)
 
-:::info Status as of ADR 0009
-There is now **one live wire** between `inventory-storage` and
-`facility-layout`: a synchronous HTTP read, `GET
-/locations/{locationCode}/classification`, called from `StowStock` to
-enforce hazmat/temperature-class placement rules (see
-[ADR 0009](/docs/adr/0009-product-classification-as-sku-master-data)).
-There is still **no Kafka wiring** in either direction — this is a request/
-response dependency, not an event subscription, and it is scoped: only SKUs
-this service has classified `Hazmat` or `TemperatureSensitive` trigger the
-call at all, and it is disabled by default (`LOCATION_LOOKUP_MODE=permissive`).
+`order-management` is this service's first synchronous command caller: order
+allocation reserves stock with `POST /reservations`, order cancellation
+revokes it with `DELETE /reservations/{id}`, and order intake reads
+`GET /products/{sku}/classification`. Both run through this service's own
+invariants (reserve against usable, revoke returns to usable); order
+management never touches a `StockUnit` directly.
+
+### ← `facility-layout` (live: Kafka-fed local read model)
+
+:::info Status as of ADR 0013
+`inventory-storage` is a **Conformist** consumer of `facility-layout`'s
+Published Language on `warehouse.facility.events`. With
+`LOCATION_LOOKUP_MODE=kafka`, `internal/adapters/outbound/facilitycache`
+replays the topic from the earliest offset on every start (a fresh,
+per-process consumer group, so a new process can never inherit another
+instance's committed offset), applies `ZoneRegistered`,
+`LocationSlotRegistered` and `LocationSlotDecommissioned`, and blocks
+startup until that replay is complete. `StowStock` then reads zone attributes
+from memory — `facility-layout` is no longer a runtime dependency of a stow.
+See [ADR 0013](/docs/adr/0013-location-classification-via-facility-events).
 :::
 
-The strategic relationship goes further than this one endpoint.
+The first slice of this edge was ADR 0009's synchronous
+`GET /locations/{locationCode}/classification`; it is still available as
+`LOCATION_LOOKUP_MODE=http` and is the documented rollback. The binary's
+default remains `permissive` (no lookup), so a deployment that sets neither
+mode enforces no placement rules at all.
+
+The strategic relationship goes further than this one read model.
 `facility-layout` is a **Generic subdomain** and an **Open Host Service** for
-physical warehouse structure. Its own `CLAUDE.md` positions the other four
+physical warehouse structure. Its own `CLAUDE.md` positions the other
 services — this one included — as downstream **Conformists** to whatever it
-publishes, and notes that actually wiring that consumption is "a separate,
-later, additive task in those repos." ADR 0009 is the first slice of that
-task landing here: a single read, for a single, narrow purpose.
+publishes.
 
 The reasoning for extracting it, from `facility-layout`'s own classification:
 
@@ -172,18 +209,17 @@ That is `warehouse-systems-ddd.md`'s "extract generic logic instead of
 duplicating it" discipline — its Cartonization example — applied to physical
 location.
 
-**What ADR 0009 did NOT do:** `StowStock`'s location-scan check still only
-confirms the bin exists in this service's own `LocationRepo` — it does not
-validate the bin against facility-layout's location catalog as "real,
-active, correctly-typed." The new call is narrowly scoped to hazmat/
-temperature placement policy, sourced from `Zone.Hazmat` /
-`Zone.TemperatureClass`, for classified SKUs only. General location
-validity, and any placement policy for `Oversized`/`HighValue`/`Fragile`
-tags, remains unbuilt and would be a further, separate extension of this
-same edge.
+**What is still NOT built:** `StowStock`'s location-scan check only confirms
+the bin exists in this service's own `LocationRepo` — it does not validate the
+bin against facility-layout's location catalog as "real, active,
+correctly-typed." The consumed data is used narrowly, for hazmat/temperature
+placement policy on classified SKUs only (sourced from `Zone.Hazmat` /
+`Zone.TemperatureClass`). General location validity, and any placement policy
+for the `Oversized`/`HighValue`/`Fragile` tags, remain unbuilt — `Fragile` is
+a valid classification tag that no stow rule reads.
 
 A `Bin` here remains an id, a capacity and an occupancy, seeded as
-infrastructure data — this ADR did not change that.
+infrastructure data — neither ADR changed that.
 
 ## Where this sits in the reference model
 

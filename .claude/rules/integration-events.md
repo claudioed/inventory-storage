@@ -1,7 +1,9 @@
 # Cross-service integration events (Kafka)
 
 This service PUBLISHES integration events over Kafka to the fleet's shared
-broker. It does not consume anything today.
+broker. It CONSUMES exactly one sibling topic, `warehouse.facility.events`
+(facility-layout), into a local location-classification cache — see
+"Consumed" below.
 
 ## Envelope shipped today: the legacy flat envelope
 
@@ -33,9 +35,10 @@ shown in full, the CloudEvents `type` reverse-DNS convention, and the
 ## Kafka
 
 - Client library: `github.com/segmentio/kafka-go`.
-- Broker: `KAFKA_BROKERS` env var (default `localhost:9092`). Shared broker
-  runs via `~/warehouse-systems/docker-compose.kafka.yml` — connect to it,
-  do not add a Kafka service to this repo's own `docker-compose.yml`.
+- Broker: `KAFKA_BROKERS` env var (default `localhost:9092`). There is ONE
+  broker platform-wide — the in-cluster Kafka deployed by `warehouse-infra`,
+  exposed on the host at `localhost:9092`. Do not add a Kafka service to this
+  repo's own `docker-compose.yml`.
 - Adapter package: `internal/adapters/outbound/kafka/`, implementing
   `ports.EventPublisher`. Selected via `EVENT_PUBLISHER=kafka|log` (default
   `log`).
@@ -71,6 +74,22 @@ deduplicate on `(source, id)` (Kafka delivery is at-least-once), and not
 assume cross-SKU ordering (`LeastBytes` balancer, no partition key). The
 authoritative answer for correctness-sensitive reads is always
 `GET /inventory/{sku}/usable`, not the event stream.
+
+## Consumed: `warehouse.facility.events` (ADR-0013)
+
+- Adapter: `internal/adapters/outbound/facilitycache/`, implementing
+  `ports.LocationClassificationLookup` for `StowStock`'s hazmat /
+  temperature-class placement rules. Selected by
+  `LOCATION_LOOKUP_MODE=kafka` (requires `KAFKA_BROKERS`); `http` is the
+  synchronous facility-layout rollback, `permissive` (default) does no lookup.
+- Applies `ZoneRegistered`, `LocationSlotRegistered`,
+  `LocationSlotDecommissioned` (matched on the trailing event name) into an
+  in-memory zone/slot map. Replays from `FirstOffset` on every start under a
+  per-process-unique consumer group (`consumerGroupPrefix` +
+  `uniqueConsumerGroup()`), and `cmd/inventory` blocks startup until the
+  replay completes (`WaitReadyTimeout`, 60s).
+- Integration test uses testcontainers
+  (`consumer_integration_test.go`), never an external broker.
 
 ## Definition of done for any new/changed publisher
 

@@ -1,12 +1,12 @@
 ---
 title: Use Cases
 sidebar_label: Use Cases
-description: The seven application-layer use cases, their collaborators, and their failure modes.
+description: The nine application-layer use cases, their collaborators, and their failure modes.
 ---
 
 # Use Cases
 
-Seven use cases, one struct each, in `internal/application/usecases`. Each
+Nine use cases, one struct each, in `internal/application/usecases`. Each
 depends only on the domain and on `application/ports` — never on an adapter.
 Dependencies are plain struct fields, wired once in
 `cmd/inventory/main.go`.
@@ -21,6 +21,10 @@ Dependencies are plain struct fields, wired once in
 | 6 | `GetUsable` | `GET /inventory/{sku}/usable` | — (read model) |
 | 7 | `RunCycleCount` | `POST /bins/{binId}/cycle-count` | `CycleCountCompleted`, `DiscrepancyDetected`, `ItemUnlocated` |
 | 8 | `ClassifyProduct` | `PUT /products/{sku}/classification` | `ProductClassified` |
+| 9 | `GetReservationsByDemandRef` | `GET /reservations?demandRef=` | — (read) |
+
+`GET /products/{sku}/classification` has no use case of its own: the HTTP
+adapter reads `ProductClassificationRepo` directly for that single lookup.
 
 ## 1. ReceiveStock(sku, qty)
 
@@ -83,19 +87,25 @@ saved together, bin first.
 **Fails when:** bin unknown (404), missing scan (400), quantity ≤ 0 (422), bin
 full (409).
 
-**Placement check (ADR 0009):** if the SKU has a registered
+**Placement check (ADR 0009, ADR 0013):** if the SKU has a registered
 `ProductClassification`, and it carries `Hazmat` or `TemperatureSensitive`,
-`StowStock` also calls `LocationClassificationLookup.GetSlotAttributes` — a
-synchronous cross-context read from facility-layout — before persisting.
+`StowStock` also calls `LocationClassificationLookup.GetSlotAttributes`
+before persisting. Which adapter answers is chosen by
+`LOCATION_LOOKUP_MODE`: `kafka` reads a local, in-memory cache fed by
+facility-layout's `warehouse.facility.events` (ADR 0013 — no network call on
+the stow path); `http` makes the original synchronous call to facility-layout
+(ADR 0009); `permissive` (the default) always answers `Known=false`.
 
 - A `Hazmat` SKU stowed into a bin whose zone is not hazmat-rated is rejected
   with `ErrHazmatZoneRequired` (409).
 - A `TemperatureSensitive` SKU stowed into a bin whose zone temperature class
   does not match is rejected with `ErrTemperatureClassMismatch` (409).
 - **Fail-open for unclassified/unknown bins:** `Known=false` (facility-layout
-  has no record of that location, e.g. a 404) permits the stow.
-- **Fail-closed only for classified, rule-relevant SKUs:** a transport/5xx
-  error from the lookup surfaces as `ErrLocationClassificationUnavailable`
+  has no record of that location — a 404 in `http` mode, an unseen or
+  decommissioned slot in `kafka` mode) permits the stow.
+- **Fail-closed only for classified, rule-relevant SKUs:** a lookup error
+  (in practice a transport/5xx error in `http` mode; the cache itself never
+  errors) surfaces as `ErrLocationClassificationUnavailable`
   (409) — but only when the SKU being stowed carries `Hazmat` or
   `TemperatureSensitive`. An unclassified SKU, or one with neither tag, is
   never blocked by lookup unavailability.
@@ -240,6 +250,20 @@ unknown tag (400 `ErrUnknownHandlingTag`), a duplicate tag (400
 aggregate constructor `product.New` — this use case does not duplicate it.
 
 `StowStock` (#2 above) is the consumer of this master data at stow time.
+
+## 9. GetReservationsByDemandRef(demandRef)
+
+Returns every `Reservation` ever created against a caller-supplied
+`demandRef` — the read side of the fleet's Order Lifecycle console
+([ADR 0012](/docs/adr/0012-adopt-mfe-console-architecture)).
+
+**Collaborators:** `ReservationRepo` only.
+
+A `demandRef` can have several reservations over its lifetime (a revoke
+followed by a retry), so the result is always an array; an unknown
+`demandRef` returns `200` with an empty array, never `404`.
+
+**Fails when:** `demandRef` is missing (400 `missing-demand-ref`).
 
 ## Cross-cutting patterns
 

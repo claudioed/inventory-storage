@@ -12,12 +12,15 @@ shared-broker reality has already caused a real incident once.
 Not every domain event this service raises belongs on the wire. Check
 `internal/adapters/outbound/kafka/publisher.go`'s doc comment — this repo
 forwards only `StockReserved`/`ReservationRevoked`; everything else is a
-local concern published only to the Postgres outbox
-(`internal/adapters/outbound/postgres/event_publisher.go`) for audit, not
-broadcast. Before adding a new event to the Kafka publisher, confirm a
-sibling context genuinely needs to react to it — check
-`docs/docs/ddd/context-map.md` or the equivalent ubiquitous-language doc
-for who's actually downstream.
+local concern (with `EVENT_PUBLISHER=kafka` most of them also go to the
+separate `warehouse.inventory.analytics` topic, ADR-0011 — that is not the
+integration contract). Note that the Postgres `events` table
+(`internal/adapters/outbound/postgres/event_publisher.go`) is only the
+default `log`-mode sink when `DATABASE_URL` is set: it is append-only and
+no relay forwards it, so it is not a transactional outbox. Before adding a
+new event to the Kafka publisher, confirm a sibling context genuinely needs
+to react to it — check `docs/docs/ecosystem/context-map.md` for who's
+actually downstream.
 
 ### 2. Envelope: CloudEvents 1.0, structured mode
 
@@ -41,6 +44,13 @@ lowercase except the final PascalCase event name — e.g.
 the subdomain (`wms`/`wes`/`wcs`/etc.) from this repo's own
 `apis/asyncapi.yaml` intro section; don't guess it.
 
+**What this repo actually ships today** is the legacy flat envelope above
+with a BARE `event_type` (`"StockReserved"`, from `EventName()`), no
+partition key, and no CloudEvents attributes — see
+`.claude/rules/integration-events.md`. Match the shipped shape for a new
+event on the existing topic; moving to full CloudEvents is a contract
+change for `wes-work-planning` and needs its own ADR.
+
 ### 3. Implementation
 
 Add the event struct to `internal/domain/<aggregate>/` (it should already
@@ -59,13 +69,11 @@ the adapter layer). In the Kafka publisher adapter:
 - Add the message to `apis/asyncapi.yaml` under this service's channel,
   matching the entity-grouping convention already there (group by
   aggregate, not chronologically)
-- Regenerate the AsyncAPI HTML reference:
-  ```bash
-  cd docs && npm run gen-async-docs:all   # or gen-async-docs, check package.json
-  ```
-  This repo's `docs-api-drift` CI job fails the PR if the generated
-  `static/asyncapi/<ctx>/` output doesn't match a fresh regen — a nullable
-  field change here has bitten before.
+- Update the hand-written `docs/docs/api-reference/events.md` catalog
+  (this repo has no generated AsyncAPI HTML — no `gen-async-docs` script
+  and no `static/asyncapi/`). The `api-lint` CI job Spectral-lints
+  `apis/asyncapi.yaml`; `docs-api-drift` only covers the REST reference
+  generated from `apis/openapi.yaml`.
 
 ### 5. Test
 

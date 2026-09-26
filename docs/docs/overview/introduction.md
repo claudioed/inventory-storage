@@ -17,7 +17,7 @@ representative of Amazon or any other company**.
 **Inventory & Storage** is the WMS-tier authoritative record of *what is held
 where, and what portion of it is usable*.
 
-It is one of five Go services that make up the `warehouse-systems` platform.
+It is one of the Go services that make up the `warehouse-systems` platform.
 This one sits in the **WMS tier** (the "what and where" layer) and is a **Core
 subdomain**: it owns inventory truth. Everything else on the platform — work
 planning, labour, task execution — asks this service what stock reality is,
@@ -62,12 +62,13 @@ Per `warehouse-systems-ddd.md`, keeping worker identity, real-time floor
 conditions and task sequencing *out* of the inventory system of record is what
 lets that record stay stable and auditable while labour policy changes weekly.
 
-## How the five services fit together
+## How it fits with its neighbours
 
 ```mermaid
 flowchart LR
   subgraph WMS["WMS tier — what & where"]
     INV["inventory-storage<br/>(Core)<br/>stock truth"]
+    OM["order-management<br/>order intake · allocation"]
   end
   subgraph WES["WES tier — when & in what order"]
     WP["wes-work-planning<br/>(Core) — the conductor"]
@@ -82,19 +83,22 @@ flowchart LR
   WP -- "warehouse.work-planning.events" --> FE
   WM -- "warehouse.workforce.events" --> WP
   FE -- "warehouse.fulfillment.events" --> WP
-  FL -. "no live wiring today<br/>(strategic OHS only)" .-> INV
+  FL -- "warehouse.facility.events<br/>zone classification cache" --> INV
+  OM -. "sync REST<br/>reserve / revoke" .-> INV
 
   classDef core fill:#0f766e,stroke:#134e4a,color:#fff;
   classDef supp fill:#7c3aed,stroke:#4c1d95,color:#fff;
   classDef gen fill:#64748b,stroke:#334155,color:#fff;
-  class INV,WP,FE core;
+  class INV,WP,FE,OM core;
   class WM supp;
   class FL gen;
 ```
 
-The dotted edge is honest: `facility-layout` exists, but nothing in this
-repository consumes it yet. See [the context map](/docs/ecosystem/context-map)
-for the full relationship analysis.
+Solid edges are Kafka topics; the dotted edge is a synchronous REST call
+into this service. This service consumes exactly one topic —
+`facility-layout`'s — and only to cache zone classifications for its stow
+placement rules (ADR 0013). See [the context map](/docs/ecosystem/context-map)
+for every wire, including the other synchronous callers.
 
 ## Where to go next
 

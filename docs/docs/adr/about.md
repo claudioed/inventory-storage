@@ -61,7 +61,7 @@ Typos, broken links and formatting are of course fair game.
 | [0001](./0001-hexagonal-ports-and-adapters.md) | Hexagonal (ports & adapters) architecture | Accepted |
 | [0002](./0002-chaotic-storage-over-fixed-slotting.md) | Chaotic (random) stow over fixed slotting | Accepted |
 | [0003](./0003-revocable-reservations.md) | Revocable reservations over hard allocation | Accepted |
-| [0004](./0004-kafka-integration-events.md) | Kafka + a shared event envelope for integration events | Accepted |
+| [0004](./0004-kafka-integration-events.md) | Kafka and a shared envelope for integration events | Accepted |
 | [0005](./0005-rfc-7807-problem-details.md) | RFC 7807 Problem Details for all error responses | Accepted |
 | [0006](./0006-arch-go-fitness-tests.md) | arch-go fitness tests to enforce the dependency rule | Accepted |
 | [0007](./0007-godog-bdd-acceptance-tests.md) | godog/Gherkin acceptance tests as executable specification | Accepted |
@@ -71,7 +71,8 @@ Typos, broken links and formatting are of course fair game.
 | [0011](./0011-analytical-data-product.md) | Per-service analytical data product (report) via a separate analytics topic | Accepted |
 | [0012](./0012-adopt-mfe-console-architecture.md) | Adopt the fleet's micro-frontend console architecture (ADR-0002 in `warehouse-ops-agent`) | Accepted |
 | [0013](./0013-location-classification-via-facility-events.md) | Location classification from facility-layout's events, not a synchronous call | Accepted |
-| [0014](./0014-rest-identity-adoption.md) | Adopt the fleet REST identity standard (static bearer keys, read/read-write scopes; `warehouse-ops-agent` ADR 0005) | Accepted |
+| [0014](./0014-rest-identity-adoption.md) | Adopt the fleet REST identity standard (static bearer keys, read/read-write scopes; `warehouse-ops-agent` ADR 0005) | Superseded by [0015](./0015-remove-rest-identity-layer.md) |
+| [0015](./0015-remove-rest-identity-layer.md) | Remove the fleet REST identity layer (static bearer keys, read/read-write scopes) | Accepted |
 | [0016](./0016-standard-metrics-convention.md) | Standard metrics convention across the fleet | Accepted |
 
 Each of these reconstructs a decision that is actually visible in this

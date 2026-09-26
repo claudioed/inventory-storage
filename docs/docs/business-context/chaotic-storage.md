@@ -92,7 +92,12 @@ Two things follow:
 - **Slotting policy lives elsewhere.** Rules about *which* free bin an item
   should go to (temperature class, hazmat, size) are placement rules, and they
   belong to `facility-layout`'s `PlacementRule` model, not here. This service
-  accepts the bin it was told about and enforces capacity.
+  accepts the bin it was told about and enforces capacity. The one exception
+  is a *veto*, never a choice: for SKUs classified `Hazmat` or
+  `TemperatureSensitive`, `StowStock` rejects a bin whose zone is not
+  hazmat-rated or has the wrong temperature class (ADR 0009, zone data from
+  facility-layout via ADR 0013), and it rejects a DOT-incompatible neighbour
+  in the same bin (ADR 0010). It still never *picks* a bin.
 
 ## Cycle counting is the audit that makes it survivable
 
