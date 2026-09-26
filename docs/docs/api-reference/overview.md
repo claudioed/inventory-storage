@@ -21,8 +21,11 @@ so they cannot drift from the spec the service ships.
 
 ## Endpoint matrix
 
-All 8 routes registered in `internal/adapters/inbound/http/server.go` are
-documented — **8 / 8**.
+All 11 routes registered in `internal/adapters/inbound/http/server.go`'s
+`NewRouter` are documented — **11 / 11**. (The separate `cmd/inventory-reports`
+binary serves the analytics report routes — see
+[Inventory Flow & Accuracy Report](/docs/analytics/inventory-flow-accuracy-report);
+they are not part of `apis/openapi.yaml`.)
 
 | Method | Path | Operation | Tag | Success | Errors |
 | --- | --- | --- | --- | --- | --- |
@@ -30,10 +33,13 @@ documented — **8 / 8**.
 | `POST` | `/stock/receive` | `receiveStock` | Stock | `202` | `400` `422` `500` |
 | `POST` | `/stock/stow` | `stowStock` | Stock | `201` | `400` `404` `409` `422` `500` |
 | `POST` | `/reservations` | `reserveStock` | Reservations | `201` | `400` `409` `422` `500` |
+| `GET` | `/reservations?demandRef=` | `getReservationsByDemandRef` | Reservations | `200` | `400` `500` |
 | `DELETE` | `/reservations/{id}` | `revokeReservation` | Reservations | `204` | `404` `409` `500` |
 | `POST` | `/reservations/{id}/confirm-pick` | `confirmPick` | Reservations | `204` | `404` `409` `500` |
 | `GET` | `/inventory/{sku}/usable` | `getUsableInventory` | Inventory | `200` | `400` `500` |
 | `POST` | `/bins/{binId}/cycle-count` | `runCycleCount` | Bins | `200` | `400` `404` `422` `500` |
+| `PUT` | `/products/{sku}/classification` | `classifyProduct` | Products | `200` / `201` | `400` `500` |
+| `GET` | `/products/{sku}/classification` | `getProductClassification` | Products | `200` | `404` `500` |
 
 ## Status-code conventions
 
@@ -86,9 +92,18 @@ Mapping is one-for-one with the typed domain and application errors, in
 | `stock-unit-not-found` | 404 | `usecases.ErrStockUnitNotFound` |
 | `bin-not-found` | 404 | `usecases.ErrBinNotFound` |
 | `reservation-not-found` | 404 | `usecases.ErrReservationNotFound` |
+| `product-classification-not-found` | 404 | `usecases.ErrProductClassificationNotFound` |
 | `empty-sku` | 400 | `shared.ErrEmptySKU` |
 | `empty-bin-id` | 400 | `shared.ErrEmptyBinID` |
 | `stow-requires-item-and-location` | 400 | `stock.ErrStowRequiresItemAndLocation` |
+| `unknown-handling-tag` | 400 | `product.ErrUnknownHandlingTag` |
+| `unknown-temperature-class` | 400 | `product.ErrUnknownTemperatureClass` |
+| `no-handling-tags` | 400 | `product.ErrNoHandlingTags` |
+| `temperature-class-required` | 400 | `product.ErrTemperatureClassRequired` |
+| `temperature-class-not-applicable` | 400 | `product.ErrTemperatureClassNotApplicable` |
+| `duplicate-handling-tag` | 400 | `product.ErrDuplicateHandlingTag` |
+| `invalid-dot-hazard-class` | 400 | `product.ErrInvalidDOTHazardClass` |
+| `dot-hazard-class-not-applicable` | 400 | `product.ErrDOTHazardClassNotApplicable` |
 | `negative-quantity` | 422 | `shared.ErrNegativeQuantity` |
 | `zero-quantity` | 422 | `shared.ErrZeroQuantity` |
 | `invalid-bin-capacity` | 422 | `location.ErrInvalidCapacity` |
@@ -100,6 +115,12 @@ Mapping is one-for-one with the typed domain and application errors, in
 | `reservation-already-resolved` | 409 | `reservation.ErrAlreadyResolved` |
 | `reservation-expired` | 409 | `reservation.ErrExpired` |
 | `reservation-no-allocations` | 409 | `reservation.ErrNoAllocations` |
+| `hazmat-zone-required` | 409 | `usecases.ErrHazmatZoneRequired` |
+| `temperature-class-mismatch` | 409 | `usecases.ErrTemperatureClassMismatch` |
+| `location-classification-unavailable` | 409 | `usecases.ErrLocationClassificationUnavailable` |
+| `hazmat-class-incompatible` | 409 | `usecases.ErrHazmatClassIncompatible` |
+| `missing-demand-ref` | 400 | written directly by the `GET /reservations` handler |
+| `malformed-request-body` | 400 | written directly when a request body is not valid JSON |
 | `internal-error` | 500 | anything unmapped |
 
 The domain never knows about any of this. It returns typed errors; the inbound
@@ -116,8 +137,10 @@ contract, and it is enforced by the arch-go fitness tests.
 
 ## Authentication
 
-None. `security: []` in the spec is deliberate and explicit: this is an
-internal, cluster-local service reached through the platform's gateway
-(Kong, north-south) and mesh (Istio), which own authentication and
-authorisation. Declaring `security: []` states "no auth at this layer" rather
-than leaving it ambiguous.
+None. No route — REST or MCP — is authenticated at the application layer,
+and `apis/openapi.yaml` declares no security schemes. A static-bearer-key
+layer was adopted in [ADR 0014](/docs/adr/0014-rest-identity-adoption) and
+removed again by
+[ADR 0015](/docs/adr/0015-remove-rest-identity-layer). In the local cluster the
+API is reached through Kong at `http://localhost:8000/api/inventory-storage`,
+which does not add authentication either.

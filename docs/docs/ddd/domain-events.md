@@ -1,7 +1,7 @@
 ---
 title: Domain Events
 sidebar_label: Domain Events
-description: The ten past-tense domain events this context raises, which aggregate raises each, and which reach the broker.
+description: The eleven past-tense domain events this context raises, which aggregate raises each, and which reach the broker.
 ---
 
 # Domain Events
@@ -101,7 +101,7 @@ no transport or platform naming.
 
 ### On the wire: reverse-DNS CloudEvents `type`
 
-The platform-wide convention, identical across all five services:
+The platform-wide convention, shared across the fleet's services:
 
 ```text
 com.warehouse.<subdomain>.<bounded-context>.<entity>.<EventName>

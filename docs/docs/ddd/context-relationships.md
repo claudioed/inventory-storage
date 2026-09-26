@@ -1,7 +1,7 @@
 ---
 title: Bounded-Context Relationships
 sidebar_label: Context Relationships
-description: How this bounded context relates to the other four, in Evans/Vernon context-mapping vocabulary.
+description: How this bounded context relates to its neighbours, in Evans/Vernon context-mapping vocabulary.
 ---
 
 # Bounded-Context Relationships
@@ -56,30 +56,35 @@ flowchart TB
     FE["<b>fulfillment-execution</b><br/>WES · Core<br/>Pick/Pack/SLAM"]
     WM["<b>workforce-management</b><br/>Supporting<br/>headcount + assignment"]
     FL["<b>facility-layout</b><br/>Generic<br/>physical warehouse map"]
+    OM["<b>order-management</b><br/>WMS<br/>order intake · allocation"]
 
     INV -->|"U → D · C/S<br/>Conformist to PL<br/><b>wired: Kafka</b>"| WP
     WM -->|"U → D · C/S<br/><b>wired: Kafka</b>"| WP
     WP -->|"U → D · C/S<br/><b>wired: Kafka</b>"| FE
     FE -->|"U → D<br/><b>wired: Kafka</b>"| WP
-    FL -.->|"OHS + PL<br/><b>not wired</b> — strategic only"| INV
-    FL -.->|"not wired"| WP
+    FL -->|"OHS + PL · U → D<br/>INV is Conformist<br/><b>wired: Kafka</b> (ADR 0013)"| INV
+    INV -->|"OHS · U → D · C/S<br/><b>wired: sync REST</b>"| OM
 
     classDef this fill:#0f766e,stroke:#134e4a,color:#fff,stroke-width:3px;
     classDef other fill:#1e293b,stroke:#475569,color:#fff;
     classDef future fill:#475569,stroke:#94a3b8,color:#e2e8f0,stroke-dasharray: 5 5;
     class INV this;
-    class WP,FE,WM other;
-    class FL future;
+    class WP,FE,WM,OM,FL other;
 ```
 
-Solid edges are actually implemented today. Dashed edges are strategic
-relationships with **no code behind them yet**.
+Every edge above is implemented today. Arrows point upstream → downstream,
+not in the direction of the network call: `order-management` *calls* this
+service, but it is the downstream customer of this service's REST OHS.
+`wes-work-planning` and `fulfillment-execution` also read
+`GET /products/{sku}/classification` synchronously — the same OHS, omitted
+from the diagram for legibility; see the
+[Context Map](/docs/ecosystem/context-map) for every wire.
 
 ## Relationship by relationship
 
 ### inventory-storage → wes-work-planning — **Customer/Supplier, Conformist downstream**
 
-The one live integration this service participates in.
+The only consumer of this service's integration events.
 
 - **Direction:** upstream (supplier). This service publishes; Work Planning
   consumes.
@@ -100,16 +105,18 @@ The one live integration this service participates in.
 
 ### inventory-storage ↔ fulfillment-execution — **indirect, via Work Planning**
 
-There is **no direct wiring** between these two. `fulfillment-execution`
+There is **no event wiring** between these two. `fulfillment-execution`
 consumes `warehouse.work-planning.events` (`WorkReleased`) and publishes
 `warehouse.fulfillment.events`; it does not subscribe to
-`warehouse.inventory.events`, and this service does not subscribe to anything.
+`warehouse.inventory.events`, and this service does not subscribe to its
+topic. Its one call into this service is a read of this service's product
+classification master data (`GET /products/{sku}/classification`).
 
 Strategically that is right: `fulfillment-execution` owns the *task* lifecycle
 and needs work to do, not stock truth. The accounting consequence of a pick
 reaches this service as an explicit `POST /reservations/{id}/confirm-pick`
 call, which is a deliberate command, not an event this service happens to
-overhear.
+overhear. (No sibling repository issues that command today.)
 
 ### inventory-storage ↔ workforce-management — **no relationship**
 
@@ -118,32 +125,49 @@ publishes `ShiftPlanCommitted` on `warehouse.workforce.events`, consumed by
 Work Planning only. Keeping these two contexts unrelated is the concrete form
 of the rule that worker identity must not leak into the system of record.
 
-### inventory-storage ← facility-layout — **strategically Conformist, technically not wired**
+### inventory-storage ← facility-layout — **Conformist, wired over Kafka**
 
 `facility-layout` is a **Generic subdomain** and an **Open Host Service** for
 physical warehouse structure: `Site → Area → Zone → Aisle → Bay → Level →
 Position`, `LocationType`, `PlacementRule`, `LocationSlot`. Its own `CLAUDE.md`
-positions the other four services — this one included — as downstream
+positions the other services — this one included — as downstream
 **Conformists** to whatever it publishes.
 
-**Today there is nothing to conform to in code.** This repository has no
-consumer, no dependency and no configuration referencing `facility-layout`, and
-`facility-layout` has no Kafka adapter at all — only an in-process log
-publisher. Wiring it up is described in that repo as "a separate, later,
-additive task in those repos — out of scope here."
+This service now conforms to it in code. With `LOCATION_LOOKUP_MODE=kafka`
+(what the `warehouse-infra` cluster runs), `internal/adapters/outbound/facilitycache`
+consumes `warehouse.facility.events` — `ZoneRegistered`,
+`LocationSlotRegistered`, `LocationSlotDecommissioned`, taken in
+`facility-layout`'s own shape with no translation layer — into a local,
+in-memory read model of zone hazmat rating and temperature class per location
+code ([ADR 0013](/docs/adr/0013-location-classification-via-facility-events)).
+`StowStock` reads that model to enforce ADR 0009's hazmat/temperature
+placement rules for classified SKUs. The synchronous
+`GET /locations/{locationCode}/classification` call ADR 0009 first
+introduced survives as `LOCATION_LOOKUP_MODE=http`, the rollback.
 
-The intended shape, when it is built:
+What is still **not** built, and remains the intended shape:
 
-- `facility-layout` becomes the source of truth for whether a `BinId` is a real,
-  active, correctly-typed slot;
-- this service's `StowStock` validates the location scan against it, instead of
-  the current "the bin must exist in `LocationRepo`" check;
-- placement policy (temperature class, hazmat, size fit) stays in
-  `facility-layout`'s `PlacementRule` model, and never migrates here — that
-  would be re-introducing fixed slotting through the back door.
+- `facility-layout` as the source of truth for whether a `BinId` is a real,
+  active, correctly-typed slot — `StowStock` still only checks that the bin
+  exists in this service's own `LocationRepo`;
+- placement policy beyond hazmat and temperature class (size fit, the
+  `Oversized`/`HighValue`/`Fragile` tags) — none of it is enforced, and when
+  it is, the policy belongs in `facility-layout`'s `PlacementRule` model, not
+  here; that would be re-introducing fixed slotting through the back door.
 
-Until then, a `Bin` in this context remains an id, a capacity and an occupancy,
-seeded as infrastructure data.
+A `Bin` in this context remains an id, a capacity and an occupancy, seeded as
+infrastructure data.
+
+### order-management → inventory-storage — **Customer/Supplier, synchronous**
+
+`order-management` is a downstream **customer** of this service's REST Open
+Host Service: order allocation reserves stock with `POST /reservations`,
+cancellation revokes it with `DELETE /reservations/{id}`, and order intake
+reads `GET /products/{sku}/classification`. Every call runs through this
+service's own invariants; order management gets no write access to a
+`StockUnit`, and the edge is gated on its side by `INVENTORY_STORAGE_MODE` /
+`PRODUCT_CLASSIFICATION_MODE` (both defaulting to a no-network `permissive`
+stub).
 
 ## Disciplines this map enforces
 
