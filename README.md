@@ -5,10 +5,10 @@
 > follows real industry-standard patterns and terminology (WMS/WES/WCS,
 > chaotic storage, CloudEvents, RFC 7807, hexagonal architecture) but is
 > **not a production system** and is **not affiliated with, endorsed by, or
-> representative of Amazon or any other company**.
+> representative of any real-world company**.
 
 The WMS-tier authoritative record of **what is held where, and what portion
-is usable**. Implements Amazon-style **chaotic (random) stow**: no fixed
+is usable**. Implements e-commerce-retailer-style **chaotic (random) stow**: no fixed
 product location — an item goes to any free bin, and the system records the
 exact bin. Supplies "stock reality" to Work Planning and makes allocation a
 **revocable reservation** so a failed physical delivery never strands an
