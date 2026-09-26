@@ -11,7 +11,7 @@ description: What the Inventory & Storage bounded context is, what it owns, and 
 This documentation site is an educational Domain-Driven Design exercise. It
 follows real industry-standard patterns and terminology, but it is **not a
 production system** and is **not affiliated with, endorsed by, or
-representative of Amazon or any other company**.
+representative of any real-world company**.
 :::
 
 **Inventory & Storage** is the WMS-tier authoritative record of *what is held

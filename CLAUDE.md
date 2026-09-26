@@ -1,7 +1,7 @@
 # Project: Inventory & Storage (Core Bounded Context)
 
 The WMS-tier authoritative record of **what is held where, and what portion is
-usable**. Implements Amazon-style **chaotic (random) stow**: no fixed product
+usable**. Implements e-commerce-retailer-style **chaotic (random) stow**: no fixed product
 location — an item goes to any free bin, and the system records the exact bin.
 Supplies "stock reality" to Work Planning (the WES core) and makes allocation
 a **revocable reservation** so a failed physical delivery never strands an
