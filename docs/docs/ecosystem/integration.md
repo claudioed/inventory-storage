@@ -21,22 +21,28 @@ operator needs to run it against the shared broker.
 
 ## What this service consumes
 
-**No Kafka topic.** There is no inbound Kafka adapter in this repository.
-Everything that changes state here arrives as an explicit HTTP command
-against [the REST API](/docs/api-reference), which runs this service's own
-invariants before anything is written.
+Every state change to this service's own aggregates still arrives as an
+explicit HTTP command against [the REST API](/docs/api-reference), which runs
+this service's own invariants before anything is written.
 
-**One synchronous HTTP dependency, added in ADR 0009.** `StowStock` reads
-`facility-layout`'s `GET /locations/{locationCode}/classification` when the
-SKU being stowed carries the `Hazmat` or `TemperatureSensitive` handling tag,
-to enforce placement rules (hazmat-rated zone, matching temperature class).
-See [ADR 0009](/docs/adr/0009-product-classification-as-sku-master-data) for
-the full design, including the fail-open/fail-closed asymmetry.
+**One Kafka topic, read into a local read model (ADR 0013).** `StowStock`
+needs the target bin's zone attributes when the SKU being stowed carries the
+`Hazmat` or `TemperatureSensitive` handling tag, to enforce placement rules
+(hazmat-rated zone, matching temperature class — see
+[ADR 0009](/docs/adr/0009-product-classification-as-sku-master-data) for the
+fail-open/fail-closed asymmetry). With `LOCATION_LOOKUP_MODE=kafka` those
+attributes come from `internal/adapters/outbound/facilitycache`, which
+replays `facility-layout`'s `warehouse.facility.events` (`ZoneRegistered`,
+`LocationSlotRegistered`, `LocationSlotDecommissioned`) from the earliest
+offset into memory on every start, under a unique per-process consumer group,
+and blocks startup until the replay is complete (up to 60s). See
+[ADR 0013](/docs/adr/0013-location-classification-via-facility-events).
 
 | Env var | Default | Purpose |
 | --- | --- | --- |
-| `LOCATION_LOOKUP_MODE` | `permissive` | `http` calls facility-layout for real; `permissive` (default) is a no-op that always permits the stow — existing tests/CI/deployments unaffected until opted in. |
-| `FACILITY_LAYOUT_BASE_URL` | *(unset)* | Base URL for the `http` mode client, e.g. `http://facility-layout:8080`. |
+| `LOCATION_LOOKUP_MODE` | `permissive` | `kafka`: Kafka-fed local cache (what the `warehouse-infra` cluster runs). `http`: synchronous `GET /locations/{locationCode}/classification` on facility-layout per stow — the rollback for `kafka`. `permissive` (default): no lookup; every location reports `Known=false`, so placement rules never block a stow. |
+| `FACILITY_LAYOUT_BASE_URL` | *(unset)* | Base URL for the `http` mode client, e.g. `http://facility-layout:80`. |
+| `KAFKA_BROKERS` | *(unset)* | Required by `kafka` mode — startup fails if it is missing. |
 
 ## Configuration
 
@@ -45,15 +51,13 @@ the full design, including the fail-open/fail-closed asymmetry.
 | `EVENT_PUBLISHER` | `log` | `kafka` swaps `ports.EventPublisher` for the Kafka adapter. The default is `log` so tests and local runs need no broker. |
 | `KAFKA_BROKERS` | `localhost:9092` | Comma-separated broker list |
 
-The shared broker runs from `~/warehouse-systems/docker-compose.kafka.yml` —
-this repository's own `docker-compose.yml` deliberately does **not** define a
-Kafka service, so five services do not race to bind the same port.
+There is one Kafka broker platform-wide: the in-cluster broker deployed by
+`warehouse-infra`, whose external listener is published on the host at
+`localhost:9092`. This repository's own `docker-compose.yml` deliberately
+does **not** define a Kafka service.
 
 ```bash
-# from ~/warehouse-systems
-docker compose -f docker-compose.kafka.yml up -d
-
-# from this repo
+# with the warehouse-infra kind cluster running
 EVENT_PUBLISHER=kafka KAFKA_BROKERS=localhost:9092 go run ./cmd/inventory
 ```
 
@@ -151,8 +155,7 @@ The integration was smoke-tested for real against the shared broker, not just
 unit-tested. To repeat it:
 
 ```bash
-# 1. shared broker up
-docker compose -f ~/warehouse-systems/docker-compose.kafka.yml up -d
+# 1. shared broker up: the warehouse-infra kind cluster, host port 9092
 
 # 2. service up, publishing to Kafka
 EVENT_PUBLISHER=kafka go run ./cmd/inventory &
@@ -163,10 +166,9 @@ curl -s -X POST localhost:8080/reservations \
   -d '{"sku":"SKU-1","quantity":5,"demandRef":"order-42"}'
 
 # 4. confirm it landed
-kafka-console-consumer.sh \
-  --bootstrap-server localhost:9092 \
-  --topic warehouse.inventory.events \
-  --from-beginning
+kubectl --context kind-warehouse -n warehouse-systems exec -it kafka-controller-0 -c kafka -- \
+  kafka-console-consumer.sh --bootstrap-server localhost:9092 \
+  --topic warehouse.inventory.events --from-beginning
 ```
 
 The unit-level equivalent lives in
@@ -179,6 +181,8 @@ required, which is why it runs in the default `go test ./...` suite.
 The service ships as a container (`Dockerfile` at the repo root, published to
 Docker Hub by the `docker-publish` CI job on `main`) and as a Helm chart
 (`charts/inventory-storage`, linted by the `helm-lint` job). In the local
-Kubernetes stack it sits behind Kong for north-south traffic and inside the
-Istio mesh for east-west; both `EVENT_PUBLISHER` and `KAFKA_BROKERS` are
-ordinary chart values.
+Kubernetes stack its REST API is reached through Kong at
+`http://localhost:8000/api/inventory-storage`, and it runs inside the Istio
+mesh for east-west traffic; `EVENT_PUBLISHER` and `KAFKA_BROKERS` are
+ordinary chart values, while `LOCATION_LOOKUP_MODE=kafka` is injected by
+`warehouse-infra` as extra env.

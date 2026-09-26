@@ -17,9 +17,9 @@ this page is drawn from that document.
 | --- | --- |
 | **Topic** | `warehouse.inventory.events` |
 | **Protocol** | Kafka |
-| **Broker** | `KAFKA_BROKERS`, default `localhost:9092` (shared broker at `~/warehouse-systems/docker-compose.kafka.yml`) |
+| **Broker** | `KAFKA_BROKERS`, default `localhost:9092` (the single platform broker deployed by `warehouse-infra`, exposed on the host at that address) |
 | **Selected by** | `EVENT_PUBLISHER=kafka` (default is `log`) |
-| **Direction** | Publish only — this service consumes nothing |
+| **Direction** | Publish only on this channel. (This service separately *consumes* `facility-layout`'s `warehouse.facility.events` for a local location cache — see [Integration](/docs/ecosystem/integration#what-this-service-consumes).) |
 | **Primary consumer** | `wes-work-planning`, projecting into `UsableInventoryObserved` by SKU |
 | **Default content type** | `application/cloudevents+json` |
 
@@ -82,7 +82,7 @@ CloudEvents, is not present in the flat envelope.
 
 ## The `type` convention
 
-Platform-wide, identical in all five services:
+Platform-wide, shared across the fleet's services:
 
 ```text
 com.warehouse.<subdomain>.<bounded-context>.<entity>.<EventName>

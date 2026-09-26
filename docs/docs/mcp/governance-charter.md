@@ -2,7 +2,7 @@
 id: governance-charter
 title: MCP Governance Charter
 sidebar_label: MCP Governance Charter
-description: "The estate-wide rules every warehouse-systems MCP server follows — tool curation, naming, annotations, auth scopes, audit, and the review gate. Federated: global standards, domain-owned servers."
+description: "The estate-wide rules every warehouse-systems MCP server follows — tool curation, naming, annotations, security posture, audit, and the review gate. Federated: global standards, domain-owned servers."
 ---
 
 # MCP Governance Charter
@@ -55,7 +55,6 @@ REST endpoint.** Tools are designed around decisions an agent makes.
 | --- | --- | --- |
 | Tool name | `snake_case`, `verb_noun`, intent-level | `get_queue_status` |
 | Resource URI | `<kind>://<context>/<scope>` | `queue://fulfillment/PICK/status` |
-| Auth scope | `mcp:<context>:<read\|write>` | `mcp:fulfillment:write` |
 | Prompt name | `snake_case`, names the SOP | `triage_backlog` |
 
 `<context>` is the bounded-context short name (`fulfillment`, `inventory`,
@@ -67,8 +66,8 @@ Every tool **MUST** declare annotations so a host can reason about risk before
 letting a model call it:
 
 1. A **read** tool **MUST** be annotated read-only (no state change).
-2. A **write** tool **MUST** be annotated destructive and **MUST** require the
-   `:write` scope.
+2. A **write** tool **MUST** be annotated destructive. (It used to also require
+   a `:write` key scope; that was removed with the auth layer — see §7.)
 3. Annotations and descriptions are treated as **untrusted** across servers; a
    host **MUST NOT** rely on another server's annotations for its own safety
    decisions. (Within our own trusted servers they are authoritative.)
@@ -89,24 +88,25 @@ interpret a tool result, when to stop and escalate, what "done" means. They are
 user-initiated and carry the least risk, but they standardize agent behaviour
 across clients and **SHOULD** be used rather than leaving procedure implicit.
 
-## 7. Security & authorization (current posture: no IdP)
+## 7. Security & authorization (current posture: unauthenticated, in-cluster)
 
-Per ADR-0008, the current posture for these internal, non-user-facing servers:
+The static-bearer-key posture ADR-0008 originally prescribed (read-only and
+read-write keys, `401`/`403`, an `Authenticator` middleware) was rolled out
+fleet-wide and then **removed**. In this repository that is recorded by
+[ADR-0015](../adr/0015-remove-rest-identity-layer.md), which superseded
+[ADR-0014](../adr/0014-rest-identity-adoption.md). Today:
 
-1. Every request **MUST** be authenticated with a static bearer API key held in
-   a Kubernetes Secret. Missing/invalid key **MUST** return `401`.
-2. Two key classes **MUST** exist: read-only and read-write. A `:write` tool
-   **MUST** reject a read-only key (`403`), audited.
-3. The API key **MUST NEVER** be logged. No secret, token, or key may appear in
-   any log line.
-4. The auth check **MUST** be a middleware behind a stable interface, so the
-   OAuth 2.1 upgrade is a drop-in with no change to tool handlers.
-5. Servers **MUST** remain reachable only in-cluster; ingress **MUST** enforce
-   HTTPS. A server **MUST NOT** be exposed to public/end-user traffic until the
-   OAuth 2.1 resource-server seam is taken (a future ADR-0009).
-6. When a tool must call another service, the server **MUST** authenticate as
-   its own client for that hop and **MUST NOT** pass a client token through
-   (confused-deputy prevention) — applies the day any upstream hop exists.
+1. `cmd/mcp` serves the Streamable HTTP handler **with no authentication**;
+   it reads no `MCP_READ_KEY` / `MCP_READWRITE_KEY`, and no tool checks a
+   scope.
+2. No secret, token, or key **MAY** appear in any log line.
+3. Servers **MUST** remain reachable only in-cluster (a `ClusterIP` Service);
+   a server **MUST NOT** be exposed to public/end-user traffic. Re-introducing
+   an identity layer is a new ADR, not a revert.
+4. When a tool must call another service, the server **MUST NOT** forward a
+   client-supplied credential (confused-deputy prevention). In this repository
+   the only upstream hop is the report tool's call to the
+   `inventory-storage-reports` REST, which carries no credential.
 
 ## 8. Guardrails (regardless of auth)
 
@@ -122,11 +122,12 @@ Per ADR-0008, the current posture for these internal, non-user-facing servers:
 
 Every tool call **MUST** emit an audit record with, at minimum:
 
-- `client_id` (which key/caller),
 - `tool` name,
-- `scope` presented,
-- `outcome` (allowed / denied / error),
+- `outcome` (success / error),
 - timestamp and trace id.
+
+(`client_id` and `scope` were part of this list while the key-based auth
+layer existed; with no identity on the request there is nothing to record.)
 
 Audit records **MUST** carry the OpenTelemetry trace id so a call links to its
 span. The adapter **MUST** be instrumented with the platform's existing OTel
@@ -139,10 +140,21 @@ Jaeger and Grafana alongside HTTP.
    the platform's ≥90% coverage bar, plus at least one transport-level test.
 2. The MCP adapter **MUST** pass `make check` (fmt, vet, build, lint, test) and
    the arch-go fitness tests.
-3. **Phase-6 CI gate (planned):** a workflow that lints tool schemas, enforces
-   the naming conventions and mandatory annotations, and fails a PR that exceeds
-   the tool-count budget without justification — the left-shift equivalent of
-   `make check` for the MCP surface.
+3. **Phase-6 governance gate:** implemented in this repository as
+   `internal/adapters/inbound/mcp/governance_test.go` — a plain `go test`
+   (so it runs in the CI `test` job) that boots the real server and asserts
+   the tool-count budget, the naming convention, mandatory annotations and
+   non-empty descriptions.
+
+### Status in this repository
+
+`inventory-storage-mcp` exposes 3 tools (`check_availability`,
+`get_bin_occupancy`, `revoke_reservation`) plus
+`get_inventory_flow_accuracy_report` when `REPORTS_BASE_URL` is set, one
+resource template (`inventory://{sku}/usable`) and one prompt
+(`triage_low_stock`). Each tool call gets an OTel span (`mcp.tool <name>`).
+Not yet implemented here: write-tool rate limiting (§8.2), a dedicated audit
+record per call (§9), and MCP-specific invocation/denial counters (§9).
 
 ## 11. Changing this charter
 

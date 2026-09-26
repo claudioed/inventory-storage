@@ -40,6 +40,7 @@ internal/
     location/                Bin aggregate (capacity, occupancy)
     stock/                   StockUnit aggregate (SKU@location, qty, state)
     reservation/              Reservation aggregate (revocable, timeout)
+    product/                 ProductClassification aggregate + DOT segregation matrix
     shared/                  SKU, BinId, Quantity value objects; domain events
   analytics/report/          read-model region (depends on nothing) for the data product
   application/
@@ -54,8 +55,13 @@ internal/
     outbound/events/         log publisher + buffered + multi (fan-out) publisher
     outbound/kafka/          Kafka integration + analytics publishers (see below)
     outbound/analyticsstore/ analytical Postgres projection + read-only reader
+    outbound/facilitycache/  Kafka-fed local cache of facility-layout zone/slot data (ADR-0013)
+    outbound/facilitylayout/ sync HTTP + permissive location-classification lookups (fallbacks)
+    outbound/telemetry/      OTel setup, trace-aware slog, reservation metrics
+  architecture/              arch-go fitness tests for the dependency rule
 migrations/                  golang-migrate SQL files (OLTP)
 migrations/analytics/        golang-migrate SQL files (analytical read model)
+web/                         inventory_mfe — Module Federation remote (separate npm module)
 ```
 
 The application layer never imports an adapter package — it depends only on
@@ -137,11 +143,19 @@ helm upgrade --install inventory-storage charts/inventory-storage \
 | POST   | `/stock/receive` | ReceiveStock |
 | POST   | `/stock/stow` | StowStock |
 | POST   | `/reservations` | ReserveStock |
+| GET    | `/reservations?demandRef=` | GetReservationsByDemandRef |
 | DELETE | `/reservations/{id}` | RevokeReservation |
 | POST   | `/reservations/{id}/confirm-pick` | ConfirmPick |
 | GET    | `/inventory/{sku}/usable` | GetUsable |
 | POST   | `/bins/{binId}/cycle-count` | RunCycleCount |
+| PUT    | `/products/{sku}/classification` | ClassifyProduct |
+| GET    | `/products/{sku}/classification` | current ProductClassification |
 | GET    | `/healthz` | liveness |
+
+None of these routes is authenticated: the static-bearer-key layer added by
+ADR-0014 was removed again by
+[ADR-0015](docs/docs/adr/0015-remove-rest-identity-layer.md), for both the
+REST and the MCP surface.
 
 ### curl walkthrough
 
@@ -198,18 +212,20 @@ curl -s -i -X DELETE localhost:8080/reservations/does-not-exist
 
 This service publishes integration events to the shared warehouse-systems
 Kafka broker so other bounded contexts (e.g. `wes-work-planning`) can project
-their own read models from inventory reality. It does not consume anything
-yet.
+their own read models from inventory reality. It also consumes one topic,
+`warehouse.facility.events`, to keep a local read model of facility-layout's
+zone classifications (see [Consumed](#consumed-facility-layouts-location-classifications)
+below).
 
 - **Topic**: `warehouse.inventory.events`
-- **Publisher selection**: `EVENT_PUBLISHER` env var — `log` (default,
-  unchanged behavior: stdout logging with in-memory adapters, or the Postgres
-  outbox with `DATABASE_URL` set) or `kafka`.
+- **Publisher selection**: `EVENT_PUBLISHER` env var — `log` (default:
+  stdout logging with in-memory adapters, or, with `DATABASE_URL` set, an
+  append-only Postgres `events` table — no relay forwards those rows
+  anywhere) or `kafka`.
 - **Broker**: `KAFKA_BROKERS` env var, comma-separated, default
-  `localhost:9092`. Start the shared broker from the workspace root:
-  ```sh
-  docker compose -f ~/warehouse-systems/docker-compose.kafka.yml up -d
-  ```
+  `localhost:9092`. There is one broker platform-wide: the in-cluster Kafka
+  deployed by `warehouse-infra`, whose external listener is reachable from
+  the host at `localhost:9092`.
 - **Envelope** (identical across all warehouse-systems services):
   ```json
   {
@@ -242,12 +258,38 @@ export KAFKA_BROKERS=localhost:9092
 export DATABASE_URL='postgres://inventory:inventory@localhost:5432/inventory?sslmode=disable'
 go run ./cmd/inventory
 
-# in another shell, tail the topic:
-docker exec -it warehouse-kafka /opt/kafka/bin/kafka-console-consumer.sh \
-  --bootstrap-server localhost:9092 --topic warehouse.inventory.events --from-beginning
+# in another shell, tail the topic on the in-cluster broker:
+kubectl --context kind-warehouse -n warehouse-systems exec -it kafka-controller-0 -c kafka -- \
+  kafka-console-consumer.sh --bootstrap-server localhost:9092 \
+  --topic warehouse.inventory.events --from-beginning
 
 # then drive a reservation + revoke through the API (see curl walkthrough above)
 ```
+
+### Consumed: facility-layout's location classifications
+
+`StowStock` enforces hazmat-zone and temperature-class placement for SKUs
+classified `Hazmat` or `TemperatureSensitive` (ADR-0009), which needs the
+target bin's zone attributes. Where they come from is selected by
+`LOCATION_LOOKUP_MODE`:
+
+| Mode | Behaviour |
+| --- | --- |
+| `permissive` (default) | No lookup; every location reports `Known=false`, so placement rules never block a stow. |
+| `kafka` | `internal/adapters/outbound/facilitycache` replays `warehouse.facility.events` (`ZoneRegistered`, `LocationSlotRegistered`, `LocationSlotDecommissioned`) from the earliest offset into an in-memory cache, under a per-process consumer group, and startup blocks until that replay completes (60s timeout). Requires `KAFKA_BROKERS`. This is what the `warehouse-infra` cluster runs (ADR-0013). |
+| `http` | Synchronous `GET /locations/{code}/classification` on facility-layout per stow, via `FACILITY_LAYOUT_BASE_URL`. Kept as the rollback for `kafka`. |
+
+The same-bin DOT hazard-class segregation check (ADR-0010) needs no lookup —
+it reads only this service's own stock and classification repositories.
+
+### Synchronous callers
+
+Other contexts call this service's REST API directly: `order-management`
+reserves/revokes stock (`POST /reservations`, `DELETE /reservations/{id}`)
+and, with `wes-work-planning` and `fulfillment-execution`, reads
+`GET /products/{sku}/classification`; `warehouse-ops-agent` reads
+`GET /reservations?demandRef=`, the reports REST and the MCP tools. Each
+caller gates the edge behind its own `*_MODE` env var.
 
 ## Analytics (data product)
 
@@ -393,7 +435,7 @@ make check        # fast pre-commit loop: fmt-check, vet, build, lint, test (-ra
 make check-all    # before pushing: check + coverage gate (90%), arch-test, bdd
 make vuln         # govulncheck ./... — known CVEs in deps and the Go stdlib
 make mutation     # fast gremlins subset (blocks in CI); mutation-full = exhaustive
-make integration  # needs a running Postgres + DATABASE_URL (not part of check)
+make integration  # Postgres tests need DATABASE_URL; Kafka tests need Docker (testcontainers)
 ```
 
 Git hooks are managed with [lefthook](https://github.com/evilmartians/lefthook)
@@ -411,7 +453,7 @@ lefthook install
 ```sh
 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
 go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
-go install golang.org/x/vuln/cmd/govulncheck@latest
+go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
 ```
 
 ## Tests
@@ -426,6 +468,10 @@ go test -race ./...
 docker compose up -d postgres
 DATABASE_URL='postgres://inventory:inventory@localhost:5432/inventory?sslmode=disable' \
   go test -tags integration ./internal/adapters/outbound/postgres/...
+
+# Kafka integration test for the facility-layout cache: starts its own
+# broker via testcontainers, so it needs Docker but no external Kafka
+go test -tags integration ./internal/adapters/outbound/facilitycache/...
 ```
 
 Each of the four named invariants has a dedicated failing-path test:

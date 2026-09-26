@@ -31,14 +31,18 @@ Migrations under `migrations/` (golang-migrate) run automatically at startup;
 
 ### Option C — publishing integration events to Kafka
 
-The shared broker lives outside this repository, at
-`~/warehouse-systems/docker-compose.kafka.yml`. Start it, then:
+The shared broker lives outside this repository: it is the single in-cluster
+Kafka deployed by `warehouse-infra`, whose external listener is published on
+the host at `localhost:9092`. With that cluster running:
 
 ```bash
 EVENT_PUBLISHER=kafka KAFKA_BROKERS=localhost:9092 go run ./cmd/inventory
 ```
 
-See [Integration](/docs/ecosystem/integration) for what lands on the wire.
+Add `LOCATION_LOOKUP_MODE=kafka` to also build the facility-layout location
+cache from `warehouse.facility.events` (startup then waits for the replay to
+finish). See [Integration](/docs/ecosystem/integration) for what lands on the
+wire and what is consumed.
 
 ## Walk the API
 
@@ -135,6 +139,9 @@ go test ./... -race
 # Postgres-backed integration tests (skipped without DATABASE_URL)
 DATABASE_URL='postgres://inventory:inventory@localhost:5432/inventory?sslmode=disable' \
   go test -tags=integration ./internal/adapters/outbound/postgres/...
+
+# Kafka-backed integration test (starts its own broker via testcontainers; needs Docker)
+go test -tags=integration ./internal/adapters/outbound/facilitycache/...
 
 # Gherkin acceptance suite
 go test -run TestFeatures ./...
