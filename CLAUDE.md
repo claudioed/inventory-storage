@@ -15,10 +15,14 @@ Go module: `github.com/claudioed/inventory-storage` (Go 1.26).
 
 ## Project Overview
 
-- Three binaries: `cmd/inventory` (OLTP REST API), `cmd/inventory-projector`
-  (analytics writer), `cmd/inventory-reports` (analytics reader). Plus
-  `cmd/mcp` (MCP inbound adapter, Streamable HTTP) and `web/` (a standalone
+- Four binaries: `cmd/inventory` (OLTP REST API), `cmd/inventory-projector`
+  (analytics writer), `cmd/inventory-reports` (analytics reader) and
+  `cmd/mcp` (MCP inbound adapter, Streamable HTTP). Plus `web/` (a standalone
   Vite/React micro-frontend remote — see `.claude/rules/frontend-mfe.md`).
+- Publishes `StockReserved`/`ReservationRevoked` to `warehouse.inventory.events`
+  and consumes ONE sibling topic, facility-layout's `warehouse.facility.events`,
+  into a local location-classification cache (`LOCATION_LOOKUP_MODE=kafka`,
+  ADR-0013). Every REST and MCP endpoint is unauthenticated (ADR-0015).
 - API contracts are the single source of truth for generated docs:
   `apis/openapi.yaml` (REST, Spectral-linted) and `apis/asyncapi.yaml`
   (events, Spectral-linted). Docs site (Docusaurus) lives in `docs/` and
@@ -48,7 +52,8 @@ internal/
   analytics/report/          read-model region (depends on nothing) — data product
   application/
     ports/                   OUT interfaces: StockRepo, LocationRepo, ReservationRepo,
-                              ProductClassificationRepo, EventPublisher, Clock
+                              ProductClassificationRepo, LocationClassificationLookup,
+                              EventPublisher, ReservationMetrics, Clock
     usecases/                one struct per use case
   adapters/
     inbound/http/            chi handlers, DTOs, error mapping
@@ -59,6 +64,10 @@ internal/
     outbound/events/         log/buffered/multi (fan-out) publisher
     outbound/kafka/          Kafka integration + analytics publishers
     outbound/analyticsstore/ analytical Postgres projection + read-only reader
+    outbound/facilitycache/  Kafka-fed facility-layout location cache (ADR-0013)
+    outbound/facilitylayout/ sync HTTP + permissive location lookups (fallbacks)
+    outbound/telemetry/      OTel setup, trace-aware slog, reservation metrics
+  architecture/              arch-go + fitness tests (dependency rule, no auth, Kafka rules)
 migrations/                  golang-migrate SQL files (OLTP)
 migrations/analytics/        golang-migrate SQL files (analytical read model)
 web/                         inventory-mfe — Vite/React MFE remote (separate module)
@@ -78,7 +87,7 @@ go run ./cmd/inventory                       # listens on :8080 (HTTP_ADDR)
 
 # Local dev — Postgres
 docker compose up -d postgres
-export DATABASE_URL='postgres://inventory:***@localhost:5432/inventory?sslmode=disable'
+export DATABASE_URL='postgres://inventory:inventory@localhost:5432/inventory?sslmode=disable'
 go run ./cmd/inventory                       # migrations run automatically
 
 # Quality gate (mirrors .github/workflows/ci.yml — see Testing below)
@@ -100,7 +109,8 @@ npm run build                                # full site build; onBrokenLinks: '
 - Go 1.26, modules. chi (`go-chi/chi/v5`), pgx/v5 + pgxpool, golang-migrate.
 - Config via env (`DATABASE_URL`, `HTTP_ADDR`, `ANALYTICS_DATABASE_URL`,
   `EVENT_PUBLISHER`, `KAFKA_BROKERS`, `CORS_ALLOWED_ORIGINS`,
-  `FACILITY_LAYOUT_BASE_URL`, `REPORTS_BASE_URL`). No hardcoded config.
+  `LOCATION_LOOKUP_MODE`, `FACILITY_LAYOUT_BASE_URL`, `REPORTS_BASE_URL`,
+  `MCP_ADDR`). No hardcoded config.
 - Typed domain errors mapped to HTTP status (RFC 7807 problem details) in the
   adapter. gofmt/go vet clean; every package has a doc comment.
 - Table-driven tests: domain + application (in-memory adapter); one httptest
@@ -135,14 +145,16 @@ npm run build                                # full site build; onBrokenLinks: '
 - `analytics-data-product.md` — ADR-0011: the additive analytics read side,
   its three processes, and the Inventory Flow & Accuracy report.
 - `integration-events.md` — the Kafka integration contract: envelope shape,
-  topic, what's published today vs. catalog-only (see also
+  topic, what's published today vs. catalog-only, and the one consumed
+  topic (`warehouse.facility.events`) (see also
   `apis/asyncapi.yaml` and `docs/docs/api-reference/events.md`, which is the
   generated-adjacent narrative page for the same contract).
 - `frontend-mfe.md` — `web/`'s scope and boundary as a Module Federation
   remote.
 
 ADRs for every non-obvious architectural decision live in
-`docs/docs/adr/0001..0015` — check there before re-litigating a decision
+`docs/docs/adr/0001..0016` — check there before re-litigating a decision
 (e.g. hexagonal layering ADR-0001, chaotic storage ADR-0002, revocable
-reservations ADR-0003, DOT hazard segregation ADR-0010, why the REST
-identity/bearer-auth layer was added then removed — ADR-0014/0015).
+reservations ADR-0003, DOT hazard segregation ADR-0010, facility-layout
+events cache ADR-0013, why the REST identity/bearer-auth layer was added then
+removed — ADR-0014/0015, standard metrics convention ADR-0016).
